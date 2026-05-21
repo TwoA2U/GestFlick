@@ -1,30 +1,31 @@
-// TabWheel Radial — Content Script v6
+// TabWheel Radial — Content Script v7
 
 (function () {
   if (window.__tabWheelLoaded) return;
   window.__tabWheelLoaded = true;
 
   // ── Constants ────────────────────────────────────────────────────────────
-  const OUTER_R     = 130;
-  const INNER_R     = 50;
-  const FLICK_R     = 30;
-  const LABEL_R     = OUTER_R + 32;
+  const OUTER_R = 140; // slightly larger — more generous hit area
+  const INNER_R = 44; // slightly smaller inner — more slice area
+  const FLICK_R = 20; // smaller deadzone — register intent sooner
+  const LABEL_R = OUTER_R + 32;
   const HUB_HOLD_MS = 600;
 
   // ── State ────────────────────────────────────────────────────────────────
-  let isOpen    = false;
-  let isLoading = false;          // async fetch in flight
-  let editMode  = false;
-  let originX   = 0, originY = 0;
-  let slices    = [];             // built slice records
-  let hovered   = -1;
-  let goTo      = null;           // tab to switch on close
-  let openTabs  = [];
-  let slots     = {};
+  let isOpen = false;
+  let isLoading = false;
+  let editMode = false;
+  let originX = 0,
+    originY = 0;
+  let slices = [];
+  let hovered = -1;
+  let goTo = null;
+  let openTabs = [];
+  let slots = {};
   let slotCount = 8;
-  let trigger   = "both";
-  let hubTimer  = null;
-  let releaseQueued = false;      // mouseup arrived before wheel was shown
+  let trigger = "both";
+  let hubTimer = null;
+  let releaseQueued = false;
 
   // ── DOM refs ──────────────────────────────────────────────────────────────
   let ROOT, BACK, SVG, HUB, RING, MTAG, LBL, PANEL, HINT;
@@ -39,14 +40,16 @@
 
   // ── Geometry ──────────────────────────────────────────────────────────────
   function xy(r, deg) {
-    const a = (deg - 90) * Math.PI / 180;
+    const a = ((deg - 90) * Math.PI) / 180;
     return [r * Math.cos(a), r * Math.sin(a)];
   }
 
   function wedge(r1, r2, a0, a1) {
-    const [ax,ay]=xy(r1,a0), [bx,by]=xy(r2,a0);
-    const [cx,cy]=xy(r2,a1), [dx,dy]=xy(r1,a1);
-    const f = (a1-a0) > 180 ? 1 : 0;
+    const [ax, ay] = xy(r1, a0),
+      [bx, by] = xy(r2, a0);
+    const [cx, cy] = xy(r2, a1),
+      [dx, dy] = xy(r1, a1);
+    const f = a1 - a0 > 180 ? 1 : 0;
     return `M${ax} ${ay}L${bx} ${by}A${r2} ${r2} 0 ${f} 1 ${cx} ${cy}L${dx} ${dy}A${r1} ${r1} 0 ${f} 0 ${ax} ${ay}Z`;
   }
 
@@ -124,6 +127,20 @@
       .tw-bg.offline{opacity:.42;filter:saturate(.3);}
       .tw-bg.hot{opacity:1!important;filter:brightness(1.35) drop-shadow(0 0 12px rgba(140,190,255,.55));}
       .tw-bg.cur{opacity:.95;}
+
+      /* ── Dismiss animation: fast scale+fade out ── */
+      #tw-root.dismissing #tw-svg{
+        animation:tw-pop-out .12s cubic-bezier(.4,0,1,1) forwards!important;}
+      #tw-root.dismissing #tw-hub{
+        animation:tw-hub-out .12s cubic-bezier(.4,0,1,1) forwards!important;}
+      #tw-root.dismissing #tw-back{opacity:0!important;transition:opacity .12s!important;}
+      @keyframes tw-pop-out{
+        from{transform:translate(-50%,-50%) scale(1); opacity:1;}
+        to  {transform:translate(-50%,-50%) scale(.6);opacity:0;}}
+      @keyframes tw-hub-out{
+        from{transform:translate(-50%,-50%) scale(1); opacity:1;}
+        to  {transform:translate(-50%,-50%) scale(.6);opacity:0;}}
+
       @keyframes tw-pop{
         from{transform:translate(-50%,-50%) scale(.5);opacity:0;}
         to  {transform:translate(-50%,-50%) scale(1); opacity:1;}}
@@ -137,13 +154,14 @@
     injectStyles();
     document.getElementById("tw-root")?.remove();
 
-    ROOT  = mk("div","tw-root");
-    BACK  = mk("div","tw-back");
-    SVG   = el("svg"); SVG.id = "tw-svg";
-    HUB   = mk("div","tw-hub");
-    LBL   = mk("div","tw-lbl");
-    PANEL = mk("div","tw-panel");
-    HINT  = mk("div","tw-hint");
+    ROOT = mk("div", "tw-root");
+    BACK = mk("div", "tw-back");
+    SVG = el("svg");
+    SVG.id = "tw-svg";
+    HUB = mk("div", "tw-hub");
+    LBL = mk("div", "tw-lbl");
+    PANEL = mk("div", "tw-panel");
+    HINT = mk("div", "tw-hint");
     HINT.textContent = "Hold center to edit  ·  Flick to switch";
 
     HUB.innerHTML = `
@@ -166,24 +184,14 @@
     RING = document.getElementById("tw-ring");
     MTAG = document.getElementById("tw-mtag");
 
-    // Hub — only mousedown needed; release is caught globally
-    HUB.addEventListener("mousedown", e => {
+    HUB.addEventListener("mousedown", (e) => {
       if (e.button !== 0) return;
-      // Don't stopPropagation — let global mouseup still fire
       e.preventDefault();
       RING.style.animation = "none";
       void RING.offsetHeight;
       RING.style.animation = "";
       RING.classList.add("go");
       hubTimer = setTimeout(toggleEdit, HUB_HOLD_MS);
-    });
-
-    // Backdrop mousedown closes (only if no panel open)
-    BACK.addEventListener("mousedown", e => {
-      if (e.button !== 0 && e.button !== 1) return;
-      if (PANEL.classList.contains("on")) { closePanel(); return; }
-      // Don't call closeWheel here — let mouseup handle it
-      // Just mark that backdrop was the target so mouseup knows to close
     });
   }
 
@@ -196,177 +204,257 @@
   // ── Place elements at cursor ──────────────────────────────────────────────
   function place() {
     SVG.style.left = HUB.style.left = LBL.style.left = originX + "px";
-    SVG.style.top  = HUB.style.top  = LBL.style.top  = originY + "px";
+    SVG.style.top = HUB.style.top = LBL.style.top = originY + "px";
   }
 
   // ── Build SVG wheel ───────────────────────────────────────────────────────
   function buildWheel() {
     SVG.innerHTML = "";
     slices = [];
-    const n = slotCount, gap = 3, per = 360 / n;
+    const n = slotCount,
+      gap = 3,
+      per = 360 / n;
     const defs = el("defs");
     SVG.appendChild(defs);
 
     for (let i = 0; i < n; i++) {
-      const a0  = i * per + gap / 2;
-      const a1  = (i+1) * per - gap / 2;
+      const a0 = i * per + gap / 2;
+      const a1 = (i + 1) * per - gap / 2;
       const mid = (a0 + a1) / 2;
-      const hue = Math.round((200 + i * (360/n)) % 360);
+      const hue = Math.round((200 + i * (360 / n)) % 360);
 
-      const asgn  = slots[String(i)] || null;
+      const asgn = slots[String(i)] || null;
       const empty = !asgn;
       let live = null;
       if (asgn) {
-        live = openTabs.find(t => {
-          try { return new URL(t.url).hostname === new URL(asgn.url).hostname; }
-          catch { return false; }
-        }) || null;
+        live =
+          openTabs.find((t) => {
+            try {
+              return new URL(t.url).hostname === new URL(asgn.url).hostname;
+            } catch {
+              return false;
+            }
+          }) || null;
       }
-      const online  = !!live;
+      const online = !!live;
       const current = live?.active === true;
 
-      // gradient
       const gid = `tg${i}`;
-      const [gx1,gy1] = xy(INNER_R,mid), [gx2,gy2] = xy(OUTER_R,mid);
-      const gr = el("linearGradient",{id:gid,gradientUnits:"userSpaceOnUse",
-        x1:gx1,y1:gy1,x2:gx2,y2:gy2});
-      gr.appendChild(el("stop",{offset:"0%",  "stop-color":empty?`hsl(${hue},18%,13%)`:`hsl(${hue},52%,22%)`}));
-      gr.appendChild(el("stop",{offset:"100%","stop-color":empty?`hsl(${hue},15%,20%)`:`hsl(${hue},65%,38%)`}));
+      const [gx1, gy1] = xy(INNER_R, mid),
+        [gx2, gy2] = xy(OUTER_R, mid);
+      const gr = el("linearGradient", {
+        id: gid,
+        gradientUnits: "userSpaceOnUse",
+        x1: gx1,
+        y1: gy1,
+        x2: gx2,
+        y2: gy2,
+      });
+      gr.appendChild(
+        el("stop", {
+          offset: "0%",
+          "stop-color": empty ? `hsl(${hue},18%,13%)` : `hsl(${hue},52%,22%)`,
+        }),
+      );
+      gr.appendChild(
+        el("stop", {
+          offset: "100%",
+          "stop-color": empty ? `hsl(${hue},15%,20%)` : `hsl(${hue},65%,38%)`,
+        }),
+      );
       defs.appendChild(gr);
 
-      // favicon clip
       const cid = `tc${i}`;
-      const clip = el("clipPath",{id:cid});
-      const [fx,fy] = xy((INNER_R+OUTER_R)/2, mid);
-      clip.appendChild(el("circle",{cx:fx,cy:fy,r:10}));
+      const clip = el("clipPath", { id: cid });
+      const [fx, fy] = xy((INNER_R + OUTER_R) / 2, mid);
+      clip.appendChild(el("circle", { cx: fx, cy: fy, r: 10 }));
       defs.appendChild(clip);
 
       const g = el("g");
 
-      // slice bg
-      const bg = el("path",{
-        d: wedge(INNER_R+2, OUTER_R-2, a0, a1),
-        fill:`url(#${gid})`,
+      const bg = el("path", {
+        d: wedge(INNER_R + 2, OUTER_R - 2, a0, a1),
+        fill: `url(#${gid})`,
         stroke: editMode ? "rgba(255,200,80,.18)" : "rgba(255,255,255,.06)",
-        "stroke-width":"1"
+        "stroke-width": "1",
       });
       bg.classList.add("tw-bg");
-      if (empty)              bg.classList.add("empty");
-      if (!online && !empty)  bg.classList.add("offline");
-      if (current)            bg.classList.add("cur");
+      if (empty) bg.classList.add("empty");
+      if (!online && !empty) bg.classList.add("offline");
+      if (current) bg.classList.add("cur");
       g.appendChild(bg);
 
-      // current rim
       if (current) {
-        g.appendChild(el("path",{
-          d:wedge(OUTER_R-5,OUTER_R-2,a0,a1),
-          fill:"rgba(255,255,255,.28)",stroke:"none"}));
+        g.appendChild(
+          el("path", {
+            d: wedge(OUTER_R - 5, OUTER_R - 2, a0, a1),
+            fill: "rgba(255,255,255,.28)",
+            stroke: "none",
+          }),
+        );
       }
 
-      // slot number badge
-      const [nx,ny] = xy(OUTER_R-11, mid);
-      g.appendChild(el("circle",{cx:nx,cy:ny,r:8.5,fill:"rgba(0,0,0,.45)"}));
-      const nt = el("text",{x:nx,y:ny+4.5,"text-anchor":"middle",
-        "font-size":"9","font-weight":"700",fill:"rgba(255,255,255,.42)",
-        "font-family":"system-ui,sans-serif"});
-      nt.textContent = String(i+1);
+      const [nx, ny] = xy(OUTER_R - 11, mid);
+      g.appendChild(
+        el("circle", { cx: nx, cy: ny, r: 8.5, fill: "rgba(0,0,0,.45)" }),
+      );
+      const nt = el("text", {
+        x: nx,
+        y: ny + 4.5,
+        "text-anchor": "middle",
+        "font-size": "9",
+        "font-weight": "700",
+        fill: "rgba(255,255,255,.42)",
+        "font-family": "system-ui,sans-serif",
+      });
+      nt.textContent = String(i + 1);
       g.appendChild(nt);
 
-      // favicon / letter / placeholder
       const furl = live?.favIconUrl || asgn?.favIconUrl || "";
       if (furl.startsWith("http")) {
-        g.appendChild(el("image",{href:furl,x:fx-10,y:fy-10,width:20,height:20,
-          "clip-path":`url(#${cid})`,opacity:online?"1":"0.3"}));
+        g.appendChild(
+          el("image", {
+            href: furl,
+            x: fx - 10,
+            y: fy - 10,
+            width: 20,
+            height: 20,
+            "clip-path": `url(#${cid})`,
+            opacity: online ? "1" : "0.3",
+          }),
+        );
       } else if (!empty) {
         let ch = "?";
-        try { ch = new URL(asgn.url).hostname.replace("www.","")[0].toUpperCase(); } catch {}
-        const lt = el("text",{x:fx,y:fy+5.5,"text-anchor":"middle",
-          "font-size":"14","font-weight":"700",fill:online?"rgba(255,255,255,.9)":"rgba(255,255,255,.28)",
-          "font-family":"system-ui,sans-serif"});
+        try {
+          ch = new URL(asgn.url).hostname.replace("www.", "")[0].toUpperCase();
+        } catch {}
+        const lt = el("text", {
+          x: fx,
+          y: fy + 5.5,
+          "text-anchor": "middle",
+          "font-size": "14",
+          "font-weight": "700",
+          fill: online ? "rgba(255,255,255,.9)" : "rgba(255,255,255,.28)",
+          "font-family": "system-ui,sans-serif",
+        });
         lt.textContent = ch;
         g.appendChild(lt);
       } else if (editMode) {
-        const pt = el("text",{x:fx,y:fy+8,"text-anchor":"middle",
-          "font-size":"22","font-weight":"200",fill:"rgba(255,200,80,.55)",
-          "font-family":"system-ui,sans-serif"});
+        const pt = el("text", {
+          x: fx,
+          y: fy + 8,
+          "text-anchor": "middle",
+          "font-size": "22",
+          "font-weight": "200",
+          fill: "rgba(255,200,80,.55)",
+          "font-family": "system-ui,sans-serif",
+        });
         pt.textContent = "+";
         g.appendChild(pt);
       } else {
-        const dt = el("text",{x:fx,y:fy+5,"text-anchor":"middle",
-          "font-size":"18","font-weight":"200",fill:"rgba(255,255,255,.09)",
-          "font-family":"system-ui,sans-serif"});
+        const dt = el("text", {
+          x: fx,
+          y: fy + 5,
+          "text-anchor": "middle",
+          "font-size": "18",
+          "font-weight": "200",
+          fill: "rgba(255,255,255,.09)",
+          "font-family": "system-ui,sans-serif",
+        });
         dt.textContent = "·";
         g.appendChild(dt);
       }
 
-      // hit area — pointer-events only, NO stopPropagation so global mouseup still fires
-      const hit = el("path",{d:wedge(INNER_R,OUTER_R,a0,a1),fill:"transparent",stroke:"none"});
+      const hit = el("path", {
+        d: wedge(INNER_R, OUTER_R, a0, a1),
+        fill: "transparent",
+        stroke: "none",
+      });
       hit.style.pointerEvents = "all";
-      hit.style.cursor = editMode ? "pointer" : (online ? "pointer" : "default");
+      hit.style.cursor = editMode ? "pointer" : online ? "pointer" : "default";
 
-      // In edit mode: open panel on mousedown (don't stop propagation for mouseup)
-      hit.addEventListener("mousedown", e => {
+      hit.addEventListener("mousedown", (e) => {
         if (e.button !== 0 || !editMode) return;
-        e.preventDefault(); // prevent text selection etc.
-        // Do NOT stopPropagation — global mouseup must still fire to clear hub ring etc.
+        e.preventDefault();
         openPanel(i, mid);
       });
 
-      // Right-click: unassign
-      hit.addEventListener("contextmenu", e => {
+      hit.addEventListener("contextmenu", (e) => {
         e.preventDefault();
         if (asgn) {
-          chrome.runtime.sendMessage({type:"SET_SLOT",slotIndex:i,assignment:null},
-            () => reload());
+          chrome.runtime.sendMessage(
+            { type: "SET_SLOT", slotIndex: i, assignment: null },
+            () => reload(),
+          );
         }
       });
 
       g.appendChild(hit);
       SVG.appendChild(g);
-      slices.push({bg, mid, online, live, asgn, empty});
+      slices.push({ bg, mid, online, live, asgn, empty });
     }
   }
 
   // ── Assign panel ──────────────────────────────────────────────────────────
   function openPanel(slotIdx, mid) {
-    const [px,py] = xy(OUTER_R+65, mid);
-    PANEL.style.left = (originX+px)+"px";
-    PANEL.style.top  = (originY+py)+"px";
+    const [px, py] = xy(OUTER_R + 65, mid);
+    PANEL.style.left = originX + px + "px";
+    PANEL.style.top = originY + py + "px";
     PANEL.innerHTML = "";
 
-    const h = mk("div"); h.className="ap-h";
-    h.textContent = `Slot ${slotIdx+1}`;
+    const h = mk("div");
+    h.className = "ap-h";
+    h.textContent = `Slot ${slotIdx + 1}`;
     PANEL.appendChild(h);
 
-    openTabs.forEach(t => {
-      const row = mk("div"); row.className = "ap-r";
+    openTabs.forEach((t) => {
+      const row = mk("div");
+      row.className = "ap-r";
       const fav = document.createElement("img");
-      fav.className = "ap-f"; fav.src = t.favIconUrl||"";
+      fav.className = "ap-f";
+      fav.src = t.favIconUrl || "";
       fav.onerror = () => fav.remove();
-      const lbl = mk("span"); lbl.className="ap-t";
-      lbl.textContent = t.title.length>30 ? t.title.slice(0,28)+"…" : t.title;
+      const lbl = mk("span");
+      lbl.className = "ap-t";
+      lbl.textContent =
+        t.title.length > 30 ? t.title.slice(0, 28) + "…" : t.title;
       row.append(fav, lbl);
-      // Use mousedown so it works even if mouseup closes the wheel
-      row.addEventListener("mousedown", e => {
+      row.addEventListener("mousedown", (e) => {
         e.preventDefault();
-        // stopPropagation here is OK — we WANT to block the wheel from closing
-        // on this mousedown. The wheel stays open in edit mode anyway.
         e.stopPropagation();
-        chrome.runtime.sendMessage({
-          type:"SET_SLOT", slotIndex:slotIdx,
-          assignment:{url:t.url,title:t.title,favIconUrl:t.favIconUrl||""}
-        }, () => { closePanel(); reload(); });
+        chrome.runtime.sendMessage(
+          {
+            type: "SET_SLOT",
+            slotIndex: slotIdx,
+            assignment: {
+              url: t.url,
+              title: t.title,
+              favIconUrl: t.favIconUrl || "",
+            },
+          },
+          () => {
+            closePanel();
+            reload();
+          },
+        );
       });
       PANEL.appendChild(row);
     });
 
     if (slots[String(slotIdx)]) {
-      const clr = mk("div"); clr.className="ap-r ap-x";
+      const clr = mk("div");
+      clr.className = "ap-r ap-x";
       clr.textContent = "✕  Clear slot";
-      clr.addEventListener("mousedown", e => {
-        e.preventDefault(); e.stopPropagation();
-        chrome.runtime.sendMessage({type:"SET_SLOT",slotIndex:slotIdx,assignment:null},
-          () => { closePanel(); reload(); });
+      clr.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        chrome.runtime.sendMessage(
+          { type: "SET_SLOT", slotIndex: slotIdx, assignment: null },
+          () => {
+            closePanel();
+            reload();
+          },
+        );
       });
       PANEL.appendChild(clr);
     }
@@ -374,12 +462,14 @@
     PANEL.classList.add("on");
   }
 
-  function closePanel() { PANEL.classList.remove("on"); }
+  function closePanel() {
+    PANEL.classList.remove("on");
+  }
 
   function reload() {
-    chrome.runtime.sendMessage({type:"GET_SLOTS"}, r => {
+    chrome.runtime.sendMessage({ type: "GET_SLOTS" }, (r) => {
       if (chrome.runtime.lastError) return;
-      slots     = r?.slots     || {};
+      slots = r?.slots || {};
       slotCount = r?.slotCount || 8;
       buildWheel();
     });
@@ -390,7 +480,7 @@
     editMode = !editMode;
     HUB.classList.toggle("edit", editMode);
     MTAG.style.opacity = editMode ? "1" : "0";
-    HINT.textContent   = editMode
+    HINT.textContent = editMode
       ? "Click slice to assign  ·  Right-click to clear  ·  Hold center to exit"
       : "Hold center to edit  ·  Flick to switch";
     closePanel();
@@ -401,28 +491,43 @@
   function show(x, y) {
     if (isOpen || isLoading) return;
     isLoading = true;
-    editMode  = false;
-    originX   = x; originY = y;
-    hovered   = -1; goTo = null; releaseQueued = false;
+    editMode = false;
+    originX = x;
+    originY = y;
+    hovered = -1;
+    goTo = null;
+    releaseQueued = false;
 
-    chrome.runtime.sendMessage({type:"GET_TABS"}, res => {
-      if (chrome.runtime.lastError || !res) { isLoading=false; return; }
+    chrome.runtime.sendMessage({ type: "GET_TABS" }, (res) => {
+      if (chrome.runtime.lastError || !res) {
+        isLoading = false;
+        return;
+      }
       openTabs = res.tabs || [];
 
-      chrome.runtime.sendMessage({type:"GET_SLOTS"}, sr => {
-        if (chrome.runtime.lastError) { isLoading=false; return; }
-        slots     = sr?.slots     || {};
+      chrome.runtime.sendMessage({ type: "GET_SLOTS" }, (sr) => {
+        if (chrome.runtime.lastError) {
+          isLoading = false;
+          return;
+        }
+        slots = sr?.slots || {};
         slotCount = sr?.slotCount || 8;
         isLoading = false;
-        isOpen    = true;
+        isOpen = true;
         place();
         buildWheel();
         ROOT.classList.add("open");
         SVG.classList.add("pop");
-        SVG.addEventListener("animationend", ()=>SVG.classList.remove("pop"),{once:true});
+        SVG.addEventListener(
+          "animationend",
+          () => SVG.classList.remove("pop"),
+          { once: true },
+        );
 
-        // User already released before we finished loading
-        if (releaseQueued) { releaseQueued=false; dismiss(); }
+        if (releaseQueued) {
+          releaseQueued = false;
+          dismiss();
+        }
       });
     });
   }
@@ -435,105 +540,163 @@
     return mid || alt;
   }
 
+  // ── FIX: Fire tab switch IMMEDIATELY, then animate the wheel out ──────────
+  // This eliminates the perceived sluggishness — the browser starts loading
+  // the new tab at once while the dismiss animation plays in parallel.
   function dismiss() {
     if (!isOpen) return;
-    isOpen   = false;
+    isOpen = false;
     editMode = false;
-    clearTimeout(hubTimer); hubTimer = null;
+
+    // Cancel hub charge ring
+    clearTimeout(hubTimer);
+    hubTimer = null;
     RING.classList.remove("go");
     HUB.classList.remove("edit");
     MTAG.style.opacity = "0";
-    HINT.textContent   = "Hold center to edit  ·  Flick to switch";
-    ROOT.classList.remove("open");
-    LBL.classList.remove("on");
+
+    // ── Switch the tab INSTANTLY, before any animation ────────────────────
+    // Chrome will activate the tab right away; the animation is cosmetic only.
+    const t = goTo;
+    goTo = null;
+    slices = [];
+    if (t) chrome.runtime.sendMessage({ type: "SWITCH_TAB", tabId: t.id });
+
+    // Close panel & label immediately
     closePanel();
+    LBL.classList.remove("on");
     hovered = -1;
-    const t = goTo; goTo = null; slices = [];
-    if (t) chrome.runtime.sendMessage({type:"SWITCH_TAB",tabId:t.id});
+
+    // Trigger dismiss animation then fully hide
+    ROOT.classList.add("dismissing");
+    ROOT.classList.remove("open");
+
+    // After the 120ms animation, clean up
+    const cleanup = () => {
+      ROOT.classList.remove("dismissing");
+      HINT.textContent = "Hold center to edit  ·  Flick to switch";
+      // Reset hub transform so it's ready for next open
+      HUB.style.animation = "";
+      SVG.style.animation = "";
+    };
+    // Use animationend on SVG; fallback timeout in case it doesn't fire
+    SVG.addEventListener("animationend", cleanup, { once: true });
+    setTimeout(cleanup, 180); // safety fallback
   }
 
   // ── Hover ─────────────────────────────────────────────────────────────────
   function setHover(i) {
     if (i === hovered) return;
     hovered = i;
-    slices.forEach((s,j) => s.bg.classList.toggle("hot", j===i && s.online));
-    const s = i>=0 ? slices[i] : null;
+    slices.forEach((s, j) => s.bg.classList.toggle("hot", j === i && s.online));
+    const s = i >= 0 ? slices[i] : null;
     if (s?.online) {
-      LBL.textContent = (s.live?.title || s.asgn?.title || "").slice(0,42);
+      LBL.textContent = (s.live?.title || s.asgn?.title || "").slice(0, 42);
       LBL.classList.add("on");
-      const rad = (s.mid-90)*Math.PI/180;
-      LBL.style.left = (originX + Math.cos(rad)*LABEL_R)+"px";
-      LBL.style.top  = (originY + Math.sin(rad)*LABEL_R)+"px";
+      const rad = ((s.mid - 90) * Math.PI) / 180;
+      LBL.style.left = originX + Math.cos(rad) * LABEL_R + "px";
+      LBL.style.top = originY + Math.sin(rad) * LABEL_R + "px";
     } else {
       LBL.classList.remove("on");
     }
   }
 
   // ── Global pointer events ─────────────────────────────────────────────────
-  // Using document-level capture listeners.
-  // IMPORTANT: we only stopPropagation on mousedown (to prevent page side-effects),
-  // NEVER on mouseup — so the release is always caught here.
+  window.addEventListener(
+    "mousedown",
+    (e) => {
+      if (!triggerMatches(e)) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (!isOpen && !isLoading) show(e.clientX, e.clientY);
+    },
+    true,
+  );
 
-  document.addEventListener("mousedown", e => {
-    if (!triggerMatches(e)) return;
-    e.preventDefault();
-    e.stopImmediatePropagation();
-    if (!isOpen && !isLoading) show(e.clientX, e.clientY);
-  }, true);
-
-  document.addEventListener("mousemove", e => {
-    if (!isOpen || editMode || slices.length===0) return;
-    const dx=e.clientX-originX, dy=e.clientY-originY;
-    if (Math.hypot(dx,dy) < FLICK_R) { setHover(-1); return; }
-    const deg = ((Math.atan2(dx,-dy)*180/Math.PI)+360)%360;
-    const per = 360/slotCount;
-    setHover(Math.floor(((deg+per/2)%360)/per) % slotCount);
-  }, {capture:true, passive:true});
-
-  document.addEventListener("mouseup", e => {
-    // Always cancel hub timer on any mouseup
-    if (hubTimer) { clearTimeout(hubTimer); hubTimer=null; RING.classList.remove("go"); }
-
-    // Only act on left or middle button
-    if (e.button !== 0 && e.button !== 1) return;
-
-    // If still loading, queue the dismissal
-    if (isLoading) { releaseQueued = true; return; }
-
-    // In edit mode — don't dismiss on background mouseup,
-    // only dismiss if backdrop was clicked (no panel open)
-    if (isOpen && editMode) {
-      // If panel is open, close it on mouseup outside the panel
-      if (PANEL.classList.contains("on")) {
-        const inPanel = e.target && PANEL.contains(e.target);
-        if (!inPanel) closePanel();
+  window.addEventListener(
+    "mousemove",
+    (e) => {
+      if (!isOpen || editMode || slices.length === 0) return;
+      const dx = e.clientX - originX,
+        dy = e.clientY - originY;
+      if (Math.hypot(dx, dy) < FLICK_R) {
+        setHover(-1);
+        return;
       }
-      return;
-    }
+      // Angle from top (12-o'clock = 0°), clockwise — matches wedge() geometry exactly.
+      // Slice i spans [i*per .. (i+1)*per]; plain floor gives the right bucket.
+      const deg = ((Math.atan2(dx, -dy) * 180) / Math.PI + 360) % 360;
+      const per = 360 / slotCount;
+      setHover(Math.floor(deg / per) % slotCount);
+    },
+    { capture: true, passive: true },
+  );
 
-    if (!isOpen) return;
+  window.addEventListener(
+    "mouseup",
+    (e) => {
+      // Always cancel hub timer on ANY mouseup
+      if (hubTimer) {
+        clearTimeout(hubTimer);
+        hubTimer = null;
+        RING.classList.remove("go");
+        RING.style.animation = "none";
+        void RING.offsetHeight;
+      }
 
-    // Normal mode: pick hovered tab and dismiss
-    const s = hovered>=0 ? slices[hovered] : null;
-    if (s?.online && s.live) goTo = s.live;
-    dismiss();
-  }, true);
+      if (e.button !== 0 && e.button !== 1) return;
 
-  document.addEventListener("auxclick", e => {
-    if (triggerMatches(e)) e.preventDefault();
-  }, true);
+      if (isLoading) {
+        releaseQueued = true;
+        return;
+      }
 
-  document.addEventListener("keydown", e => {
-    if (e.key!=="Escape") return;
-    if (PANEL.classList.contains("on")) closePanel();
-    else if (isOpen) dismiss();
-  }, true);
+      // Edit mode: only close panel on outside click, never dismiss wheel
+      if (isOpen && editMode) {
+        if (PANEL.classList.contains("on")) {
+          const inPanel = PANEL.contains(e.target);
+          if (!inPanel) closePanel();
+        }
+        return;
+      }
+
+      if (!isOpen) return;
+
+      const s = hovered >= 0 ? slices[hovered] : null;
+      if (s?.online && s.live) goTo = s.live;
+      dismiss();
+    },
+    true,
+  );
+
+  document.addEventListener(
+    "auxclick",
+    (e) => {
+      if (triggerMatches(e)) e.preventDefault();
+    },
+    true,
+  );
+
+  document.addEventListener(
+    "keydown",
+    (e) => {
+      if (e.key !== "Escape") return;
+      if (PANEL.classList.contains("on")) closePanel();
+      else if (isOpen) {
+        goTo = null;
+        dismiss();
+      }
+    },
+    true,
+  );
 
   // ── Init ──────────────────────────────────────────────────────────────────
   buildDOM();
-  chrome.storage.sync.get({ trigger: "both" }, data => { trigger = data.trigger || "both"; });
-  chrome.storage.onChanged.addListener(changes => {
+  chrome.storage.sync.get({ trigger: "both" }, (data) => {
+    trigger = data.trigger || "both";
+  });
+  chrome.storage.onChanged.addListener((changes) => {
     if (changes.trigger) trigger = changes.trigger.newValue || "both";
   });
-  console.log("[TabWheel] ready");
+  console.log("[TabWheel] ready v7");
 })();
