@@ -1,20 +1,18 @@
-// TabWheel Radial — Content Script v7
-
+// TabWheel Radial — Content Script v12 (Click to Add, Right-Click to Delete)
 (function () {
   if (window.__tabWheelLoaded) return;
   window.__tabWheelLoaded = true;
 
   // ── Constants ────────────────────────────────────────────────────────────
-  const OUTER_R = 140; // slightly larger — more generous hit area
-  const INNER_R = 44; // slightly smaller inner — more slice area
-  const FLICK_R = 20; // smaller deadzone — register intent sooner
+  const OUTER_R = 140;
+  const INNER_R = 44;
+  const FLICK_R = 20;
   const LABEL_R = OUTER_R + 32;
-  const HUB_HOLD_MS = 600;
 
   // ── State ────────────────────────────────────────────────────────────────
   let isOpen = false;
   let isLoading = false;
-  let editMode = false;
+  let cancelRequested = false;
   let originX = 0,
     originY = 0;
   let slices = [];
@@ -23,27 +21,32 @@
   let openTabs = [];
   let slots = {};
   let slotCount = 8;
-  let trigger = "both";
-  let hubTimer = null;
   let releaseQueued = false;
 
-  // ── DOM refs ──────────────────────────────────────────────────────────────
-  let ROOT, BACK, SVG, HUB, RING, MTAG, LBL, PANEL, HINT;
+  let instantKey = "q";
+  let cursorX = 0,
+    cursorY = 0;
+  let comboActive = false;
 
-  // ── SVG helper ────────────────────────────────────────────────────────────
+  // ── DOM refs ─────────────────────────────────────────────────────────────
+  let ROOT, BACK, SVG, HUB, LBL, HINT;
+
   const NS = "http://www.w3.org/2000/svg";
   function el(tag, a) {
     const e = document.createElementNS(NS, tag);
     if (a) for (const k in a) e.setAttribute(k, a[k]);
     return e;
   }
+  function mk(tag, id) {
+    const e = document.createElement(tag);
+    if (id) e.id = id;
+    return e;
+  }
 
-  // ── Geometry ──────────────────────────────────────────────────────────────
   function xy(r, deg) {
     const a = ((deg - 90) * Math.PI) / 180;
     return [r * Math.cos(a), r * Math.sin(a)];
   }
-
   function wedge(r1, r2, a0, a1) {
     const [ax, ay] = xy(r1, a0),
       [bx, by] = xy(r2, a0);
@@ -53,161 +56,80 @@
     return `M${ax} ${ay}L${bx} ${by}A${r2} ${r2} 0 ${f} 1 ${cx} ${cy}L${dx} ${dy}A${r1} ${r1} 0 ${f} 0 ${ax} ${ay}Z`;
   }
 
-  // ── Inline styles ─────────────────────────────────────────────────────────
   function injectStyles() {
     if (document.getElementById("tw-style")) return;
     const s = document.createElement("style");
     s.id = "tw-style";
     s.textContent = `
-      #tw-root{all:initial;position:fixed!important;inset:0!important;
-        z-index:2147483647!important;pointer-events:none!important;
-        font-family:system-ui,sans-serif!important;}
+      #tw-root{all:initial;position:fixed!important;inset:0!important;z-index:2147483647!important;pointer-events:none!important;font-family:system-ui,sans-serif!important;display:none!important;}
+      #tw-root.open, #tw-root.dismissing{display:block!important;}
       #tw-root.open{pointer-events:all!important;}
-      #tw-back{position:fixed;inset:0;background:rgba(0,0,0,.42);
-        backdrop-filter:blur(2px);opacity:0;transition:opacity .15s;}
+
+      #tw-back{position:fixed;inset:0;background:rgba(0,0,0,.42);backdrop-filter:blur(2px);opacity:0;transition:opacity .15s;}
       #tw-root.open #tw-back{opacity:1;}
-      #tw-svg{position:fixed;overflow:visible;pointer-events:none;
-        width:1px;height:1px;transform:translate(-50%,-50%);}
-      #tw-hub{position:fixed;transform:translate(-50%,-50%);
-        width:50px;height:50px;border-radius:50%;
-        background:rgba(14,14,24,.97);border:2px solid rgba(255,255,255,.15);
-        box-shadow:0 4px 24px rgba(0,0,0,.7);
-        display:flex;align-items:center;justify-content:center;
-        cursor:pointer;pointer-events:all;overflow:visible;transition:border-color .2s;}
-      #tw-hub.edit{border-color:rgba(255,200,80,.8);
-        box-shadow:0 0 18px rgba(255,200,80,.3),0 4px 24px rgba(0,0,0,.7);}
-      #tw-ring{position:absolute;inset:-4px;border-radius:50%;
-        background:conic-gradient(rgba(255,200,80,.9) 0%,transparent 0%);
-        opacity:0;pointer-events:none;z-index:-1;}
-      #tw-ring.go{opacity:1;animation:tw-charge .6s linear forwards;}
-      @keyframes tw-charge{
-        from{background:conic-gradient(rgba(255,200,80,.9) 0%,rgba(20,20,40,.6) 0%);}
-        to  {background:conic-gradient(rgba(255,200,80,.9) 100%,rgba(20,20,40,.6) 100%);}}
-      #tw-mtag{position:absolute;bottom:-22px;left:50%;transform:translateX(-50%);
-        font-size:9px;font-weight:700;letter-spacing:1px;
-        color:rgba(255,200,80,.9);background:rgba(14,14,24,.95);
-        border:1px solid rgba(255,200,80,.3);border-radius:4px;
-        padding:2px 6px;white-space:nowrap;opacity:0;pointer-events:none;transition:opacity .15s;}
-      #tw-lbl{position:fixed;transform:translate(-50%,-50%);
-        background:rgba(10,10,20,.95);border:1px solid rgba(255,255,255,.1);
-        border-radius:10px;padding:5px 13px;font-size:12px;font-weight:500;
-        color:#e8e8f5;white-space:nowrap;max-width:220px;overflow:hidden;
-        text-overflow:ellipsis;pointer-events:none;opacity:0;transition:opacity .1s;
-        box-shadow:0 4px 16px rgba(0,0,0,.6);}
+
+      #tw-svg{position:fixed;overflow:visible;pointer-events:none;width:1px;height:1px;transform:translate(-50%,-50%);}
+      #tw-hub{position:fixed;transform:translate(-50%,-50%);width:50px;height:50px;border-radius:50%;background:rgba(14,14,24,.97);border:2px solid rgba(255,255,255,.15);box-shadow:0 4px 24px rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;cursor:pointer;pointer-events:all;overflow:visible;}
+
+      #tw-lbl{position:fixed;transform:translate(-50%,-50%);background:rgba(10,10,20,.95);border:1px solid rgba(255,255,255,.1);border-radius:10px;padding:5px 13px;font-size:12px;font-weight:500;color:#e8e8f5;white-space:nowrap;max-width:220px;overflow:hidden;text-overflow:ellipsis;pointer-events:none;opacity:0;transition:opacity .1s;box-shadow:0 4px 16px rgba(0,0,0,.6);}
       #tw-lbl.on{opacity:1;}
-      #tw-panel{position:fixed;transform:translate(-50%,-50%);
-        background:rgba(12,12,22,.98);border:1px solid rgba(255,200,80,.28);
-        border-radius:12px;min-width:195px;max-width:240px;max-height:280px;
-        overflow-y:auto;overflow-x:hidden;pointer-events:all;
-        opacity:0;scale:.88;
-        transition:opacity .15s,scale .15s cubic-bezier(.34,1.56,.64,1);
-        box-shadow:0 8px 32px rgba(0,0,0,.8);z-index:10;}
-      #tw-panel.on{opacity:1;scale:1;}
-      #tw-panel::-webkit-scrollbar{width:4px;}
-      #tw-panel::-webkit-scrollbar-thumb{background:rgba(255,255,255,.1);border-radius:4px;}
-      .ap-h{font-size:10px;font-weight:700;letter-spacing:.7px;text-transform:uppercase;
-        color:rgba(255,200,80,.85);padding:9px 12px 6px;
-        border-bottom:1px solid rgba(255,255,255,.07);
-        position:sticky;top:0;background:rgba(12,12,22,.98);}
-      .ap-r{display:flex;align-items:center;gap:8px;padding:7px 12px;
-        cursor:pointer;border-bottom:1px solid rgba(255,255,255,.04);transition:background .1s;}
-      .ap-r:hover{background:rgba(255,255,255,.07);}
-      .ap-r:last-child{border-bottom:none;}
-      .ap-f{width:15px;height:15px;border-radius:3px;object-fit:contain;flex-shrink:0;}
-      .ap-t{font-size:12px;color:rgba(215,215,235,.88);overflow:hidden;
-        text-overflow:ellipsis;white-space:nowrap;flex:1;}
-      .ap-x{justify-content:center;color:rgba(255,100,100,.8)!important;
-        font-size:12px;font-weight:500;border-top:1px solid rgba(255,255,255,.07)!important;}
-      .ap-x:hover{background:rgba(255,70,70,.09)!important;color:rgba(255,140,140,1)!important;}
-      #tw-hint{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);
-        font-size:11px;color:rgba(255,255,255,.25);letter-spacing:.04em;
-        pointer-events:none;white-space:nowrap;}
+
+      #tw-hint{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);font-size:11px;color:rgba(255,255,255,.25);letter-spacing:.04em;pointer-events:none;white-space:nowrap;}
+
       .tw-bg{pointer-events:none;transition:opacity .12s,filter .12s;opacity:.78;}
       .tw-bg.empty{opacity:.3;}
       .tw-bg.offline{opacity:.42;filter:saturate(.3);}
       .tw-bg.hot{opacity:1!important;filter:brightness(1.35) drop-shadow(0 0 12px rgba(140,190,255,.55));}
       .tw-bg.cur{opacity:.95;}
 
-      /* ── Dismiss animation: fast scale+fade out ── */
-      #tw-root.dismissing #tw-svg{
-        animation:tw-pop-out .12s cubic-bezier(.4,0,1,1) forwards!important;}
-      #tw-root.dismissing #tw-hub{
-        animation:tw-hub-out .12s cubic-bezier(.4,0,1,1) forwards!important;}
+      #tw-root.dismissing #tw-svg{animation:tw-pop-out .12s cubic-bezier(.4,0,1,1) forwards!important;}
+      #tw-root.dismissing #tw-hub{animation:tw-hub-out .12s cubic-bezier(.4,0,1,1) forwards!important;}
       #tw-root.dismissing #tw-back{opacity:0!important;transition:opacity .12s!important;}
-      @keyframes tw-pop-out{
-        from{transform:translate(-50%,-50%) scale(1); opacity:1;}
-        to  {transform:translate(-50%,-50%) scale(.6);opacity:0;}}
-      @keyframes tw-hub-out{
-        from{transform:translate(-50%,-50%) scale(1); opacity:1;}
-        to  {transform:translate(-50%,-50%) scale(.6);opacity:0;}}
 
-      @keyframes tw-pop{
-        from{transform:translate(-50%,-50%) scale(.5);opacity:0;}
-        to  {transform:translate(-50%,-50%) scale(1); opacity:1;}}
+      @keyframes tw-pop-out{from{transform:translate(-50%,-50%) scale(1);opacity:1;}to{transform:translate(-50%,-50%) scale(.6);opacity:0;}}
+      @keyframes tw-hub-out{from{transform:translate(-50%,-50%) scale(1);opacity:1;}to{transform:translate(-50%,-50%) scale(.6);opacity:0;}}
+      @keyframes tw-pop{from{transform:translate(-50%,-50%) scale(.5);opacity:0;}to{transform:translate(-50%,-50%) scale(1);opacity:1;}}
       #tw-svg.pop{animation:tw-pop .2s cubic-bezier(.34,1.56,.64,1) forwards;}
     `;
     (document.head || document.documentElement).appendChild(s);
   }
 
-  // ── Build DOM ─────────────────────────────────────────────────────────────
   function buildDOM() {
     injectStyles();
     document.getElementById("tw-root")?.remove();
-
     ROOT = mk("div", "tw-root");
     BACK = mk("div", "tw-back");
     SVG = el("svg");
     SVG.id = "tw-svg";
     HUB = mk("div", "tw-hub");
     LBL = mk("div", "tw-lbl");
-    PANEL = mk("div", "tw-panel");
     HINT = mk("div", "tw-hint");
-    HINT.textContent = "Hold center to edit  ·  Flick to switch";
+    updateHint();
 
     HUB.innerHTML = `
-      <div id="tw-ring"></div>
-      <svg viewBox="0 0 22 22" width="20" height="20" fill="none" stroke="white"
-           stroke-width="1.6" stroke-linecap="round"
-           style="pointer-events:none;position:relative;z-index:1">
+      <svg viewBox="0 0 22 22" width="20" height="20" fill="none" stroke="white" stroke-width="1.6" stroke-linecap="round" style="pointer-events:none">
         <circle cx="11" cy="11" r="7.5"/>
         <circle cx="11" cy="11" r="2.2" fill="white" stroke="none"/>
         <line x1="11" y1="3.5" x2="11" y2="6"/>
-        <line x1="11" y1="16"  x2="11" y2="18.5"/>
-        <line x1="3.5" y1="11" x2="6"  y2="11"/>
-        <line x1="16"  y1="11" x2="18.5" y2="11"/>
-      </svg>
-      <div id="tw-mtag">EDIT</div>`;
+        <line x1="11" y1="16" x2="11" y2="18.5"/>
+        <line x1="3.5" y1="11" x2="6" y2="11"/>
+        <line x1="16" y1="11" x2="18.5" y2="11"/>
+      </svg>`;
 
-    ROOT.append(BACK, SVG, HUB, LBL, PANEL, HINT);
+    ROOT.append(BACK, SVG, HUB, LBL, HINT);
     (document.body || document.documentElement).appendChild(ROOT);
-
-    RING = document.getElementById("tw-ring");
-    MTAG = document.getElementById("tw-mtag");
-
-    HUB.addEventListener("mousedown", (e) => {
-      if (e.button !== 0) return;
-      e.preventDefault();
-      RING.style.animation = "none";
-      void RING.offsetHeight;
-      RING.style.animation = "";
-      RING.classList.add("go");
-      hubTimer = setTimeout(toggleEdit, HUB_HOLD_MS);
-    });
   }
 
-  function mk(tag, id) {
-    const e = document.createElement(tag);
-    if (id) e.id = id;
-    return e;
+  function updateHint() {
+    if (HINT)
+      HINT.textContent = `Hold Alt+${instantKey.toUpperCase()} · Click empty to add · Click filled to switch · Right-click to delete`;
   }
 
-  // ── Place elements at cursor ──────────────────────────────────────────────
   function place() {
     SVG.style.left = HUB.style.left = LBL.style.left = originX + "px";
     SVG.style.top = HUB.style.top = LBL.style.top = originY + "px";
   }
 
-  // ── Build SVG wheel ───────────────────────────────────────────────────────
   function buildWheel() {
     SVG.innerHTML = "";
     slices = [];
@@ -216,7 +138,6 @@
       per = 360 / n;
     const defs = el("defs");
     SVG.appendChild(defs);
-
     for (let i = 0; i < n; i++) {
       const a0 = i * per + gap / 2;
       const a1 = (i + 1) * per - gap / 2;
@@ -271,11 +192,10 @@
       defs.appendChild(clip);
 
       const g = el("g");
-
       const bg = el("path", {
         d: wedge(INNER_R + 2, OUTER_R - 2, a0, a1),
         fill: `url(#${gid})`,
-        stroke: editMode ? "rgba(255,200,80,.18)" : "rgba(255,255,255,.06)",
+        stroke: "rgba(255,255,255,.06)",
         "stroke-width": "1",
       });
       bg.classList.add("tw-bg");
@@ -339,7 +259,7 @@
         });
         lt.textContent = ch;
         g.appendChild(lt);
-      } else if (editMode) {
+      } else {
         const pt = el("text", {
           x: fx,
           y: fy + 8,
@@ -351,18 +271,6 @@
         });
         pt.textContent = "+";
         g.appendChild(pt);
-      } else {
-        const dt = el("text", {
-          x: fx,
-          y: fy + 5,
-          "text-anchor": "middle",
-          "font-size": "18",
-          "font-weight": "200",
-          fill: "rgba(255,255,255,.09)",
-          "font-family": "system-ui,sans-serif",
-        });
-        dt.textContent = "·";
-        g.appendChild(dt);
       }
 
       const hit = el("path", {
@@ -371,16 +279,12 @@
         stroke: "none",
       });
       hit.style.pointerEvents = "all";
-      hit.style.cursor = editMode ? "pointer" : online ? "pointer" : "default";
+      hit.style.cursor = "pointer";
 
-      hit.addEventListener("mousedown", (e) => {
-        if (e.button !== 0 || !editMode) return;
-        e.preventDefault();
-        openPanel(i, mid);
-      });
-
+      // ✅ Right-click to delete slot (keeps wheel open for immediate reassignment)
       hit.addEventListener("contextmenu", (e) => {
         e.preventDefault();
+        e.stopPropagation();
         if (asgn) {
           chrome.runtime.sendMessage(
             { type: "SET_SLOT", slotIndex: i, assignment: null },
@@ -395,103 +299,25 @@
     }
   }
 
-  // ── Assign panel ──────────────────────────────────────────────────────────
-  function openPanel(slotIdx, mid) {
-    const [px, py] = xy(OUTER_R + 65, mid);
-    PANEL.style.left = originX + px + "px";
-    PANEL.style.top = originY + py + "px";
-    PANEL.innerHTML = "";
-
-    const h = mk("div");
-    h.className = "ap-h";
-    h.textContent = `Slot ${slotIdx + 1}`;
-    PANEL.appendChild(h);
-
-    openTabs.forEach((t) => {
-      const row = mk("div");
-      row.className = "ap-r";
-      const fav = document.createElement("img");
-      fav.className = "ap-f";
-      fav.src = t.favIconUrl || "";
-      fav.onerror = () => fav.remove();
-      const lbl = mk("span");
-      lbl.className = "ap-t";
-      lbl.textContent =
-        t.title.length > 30 ? t.title.slice(0, 28) + "…" : t.title;
-      row.append(fav, lbl);
-      row.addEventListener("mousedown", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        chrome.runtime.sendMessage(
-          {
-            type: "SET_SLOT",
-            slotIndex: slotIdx,
-            assignment: {
-              url: t.url,
-              title: t.title,
-              favIconUrl: t.favIconUrl || "",
-            },
-          },
-          () => {
-            closePanel();
-            reload();
-          },
-        );
-      });
-      PANEL.appendChild(row);
-    });
-
-    if (slots[String(slotIdx)]) {
-      const clr = mk("div");
-      clr.className = "ap-r ap-x";
-      clr.textContent = "✕  Clear slot";
-      clr.addEventListener("mousedown", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        chrome.runtime.sendMessage(
-          { type: "SET_SLOT", slotIndex: slotIdx, assignment: null },
-          () => {
-            closePanel();
-            reload();
-          },
-        );
-      });
-      PANEL.appendChild(clr);
-    }
-
-    PANEL.classList.add("on");
-  }
-
-  function closePanel() {
-    PANEL.classList.remove("on");
-  }
-
   function reload() {
     chrome.runtime.sendMessage({ type: "GET_SLOTS" }, (r) => {
       if (chrome.runtime.lastError) return;
       slots = r?.slots || {};
       slotCount = r?.slotCount || 8;
       buildWheel();
+      // Preserve hover state visually after reload
+      if (hovered >= 0 && hovered < slices.length) {
+        const temp = hovered;
+        hovered = -1;
+        setHover(temp);
+      }
     });
   }
 
-  // ── Edit mode ─────────────────────────────────────────────────────────────
-  function toggleEdit() {
-    editMode = !editMode;
-    HUB.classList.toggle("edit", editMode);
-    MTAG.style.opacity = editMode ? "1" : "0";
-    HINT.textContent = editMode
-      ? "Click slice to assign  ·  Right-click to clear  ·  Hold center to exit"
-      : "Hold center to edit  ·  Flick to switch";
-    closePanel();
-    buildWheel();
-  }
-
-  // ── Open / close ──────────────────────────────────────────────────────────
   function show(x, y) {
     if (isOpen || isLoading) return;
     isLoading = true;
-    editMode = false;
+    cancelRequested = false;
     originX = x;
     originY = y;
     hovered = -1;
@@ -499,14 +325,14 @@
     releaseQueued = false;
 
     chrome.runtime.sendMessage({ type: "GET_TABS" }, (res) => {
-      if (chrome.runtime.lastError || !res) {
+      if (cancelRequested || chrome.runtime.lastError || !res) {
         isLoading = false;
         return;
       }
       openTabs = res.tabs || [];
 
       chrome.runtime.sendMessage({ type: "GET_SLOTS" }, (sr) => {
-        if (chrome.runtime.lastError) {
+        if (cancelRequested || chrome.runtime.lastError) {
           isLoading = false;
           return;
         }
@@ -526,71 +352,63 @@
 
         if (releaseQueued) {
           releaseQueued = false;
-          dismiss();
+          executeAndDismiss();
         }
       });
     });
   }
 
-  function triggerMatches(e) {
-    const mid = e.button === 1;
-    const alt = e.button === 0 && e.altKey;
-    if (trigger === "middle") return mid;
-    if (trigger === "alt") return alt;
-    return mid || alt;
-  }
-
-  // ── FIX: Fire tab switch IMMEDIATELY, then animate the wheel out ──────────
-  // This eliminates the perceived sluggishness — the browser starts loading
-  // the new tab at once while the dismiss animation plays in parallel.
   function dismiss() {
-    if (!isOpen) return;
+    if (!isOpen && !isLoading) return;
     isOpen = false;
-    editMode = false;
+    isLoading = false;
+    cancelRequested = true;
 
-    // Cancel hub charge ring
-    clearTimeout(hubTimer);
-    hubTimer = null;
-    RING.classList.remove("go");
-    HUB.classList.remove("edit");
-    MTAG.style.opacity = "0";
-
-    // ── Switch the tab INSTANTLY, before any animation ────────────────────
-    // Chrome will activate the tab right away; the animation is cosmetic only.
-    const t = goTo;
+    const targetTab = goTo;
     goTo = null;
     slices = [];
-    if (t) chrome.runtime.sendMessage({ type: "SWITCH_TAB", tabId: t.id });
 
-    // Close panel & label immediately
-    closePanel();
+    if (targetTab)
+      chrome.runtime.sendMessage({ type: "SWITCH_TAB", tabId: targetTab.id });
+
     LBL.classList.remove("on");
     hovered = -1;
 
-    // Trigger dismiss animation then fully hide
     ROOT.classList.add("dismissing");
     ROOT.classList.remove("open");
 
-    // After the 120ms animation, clean up
     const cleanup = () => {
       ROOT.classList.remove("dismissing");
-      HINT.textContent = "Hold center to edit  ·  Flick to switch";
-      // Reset hub transform so it's ready for next open
       HUB.style.animation = "";
       SVG.style.animation = "";
     };
-    // Use animationend on SVG; fallback timeout in case it doesn't fire
     SVG.addEventListener("animationend", cleanup, { once: true });
-    setTimeout(cleanup, 180); // safety fallback
+    setTimeout(cleanup, 180);
   }
 
-  // ── Hover ─────────────────────────────────────────────────────────────────
+  // ✅ Triggered ONLY on Alt+Q release (Switches tab, NEVER assigns)
+  function executeAndDismiss() {
+    if (!isOpen) return;
+
+    const s = hovered >= 0 ? slices[hovered] : null;
+
+    if (s) {
+      // Only switch if occupied. If empty, do nothing and just close.
+      if (s.online && s.live) {
+        goTo = s.live;
+      }
+    }
+    dismiss();
+  }
+
   function setHover(i) {
     if (i === hovered) return;
     hovered = i;
+
     slices.forEach((s, j) => s.bg.classList.toggle("hot", j === i && s.online));
     const s = i >= 0 ? slices[i] : null;
-    if (s?.online) {
+
+    if (s) {
       LBL.textContent = (s.live?.title || s.asgn?.title || "").slice(0, 42);
       LBL.classList.add("on");
       const rad = ((s.mid - 90) * Math.PI) / 180;
@@ -601,30 +419,20 @@
     }
   }
 
-  // ── Global pointer events ─────────────────────────────────────────────────
-  window.addEventListener(
-    "mousedown",
-    (e) => {
-      if (!triggerMatches(e)) return;
-      e.preventDefault();
-      e.stopImmediatePropagation();
-      if (!isOpen && !isLoading) show(e.clientX, e.clientY);
-    },
-    true,
-  );
-
+  // ── Global Events ────────────────────────────────────────────────────────
   window.addEventListener(
     "mousemove",
     (e) => {
-      if (!isOpen || editMode || slices.length === 0) return;
+      cursorX = e.clientX;
+      cursorY = e.clientY;
+
+      if (!isOpen || slices.length === 0) return;
       const dx = e.clientX - originX,
         dy = e.clientY - originY;
       if (Math.hypot(dx, dy) < FLICK_R) {
         setHover(-1);
         return;
       }
-      // Angle from top (12-o'clock = 0°), clockwise — matches wedge() geometry exactly.
-      // Slice i spans [i*per .. (i+1)*per]; plain floor gives the right bucket.
       const deg = ((Math.atan2(dx, -dy) * 180) / Math.PI + 360) % 360;
       const per = 360 / slotCount;
       setHover(Math.floor(deg / per) % slotCount);
@@ -632,47 +440,38 @@
     { capture: true, passive: true },
   );
 
+  // ✅ Left-Click to Assign (Empty) or Switch (Occupied)
   window.addEventListener(
-    "mouseup",
+    "mousedown",
     (e) => {
-      // Always cancel hub timer on ANY mouseup
-      if (hubTimer) {
-        clearTimeout(hubTimer);
-        hubTimer = null;
-        RING.classList.remove("go");
-        RING.style.animation = "none";
-        void RING.offsetHeight;
-      }
-
-      if (e.button !== 0 && e.button !== 1) return;
-
-      if (isLoading) {
-        releaseQueued = true;
-        return;
-      }
-
-      // Edit mode: only close panel on outside click, never dismiss wheel
-      if (isOpen && editMode) {
-        if (PANEL.classList.contains("on")) {
-          const inPanel = PANEL.contains(e.target);
-          if (!inPanel) closePanel();
+      if (e.button === 0 && isOpen) {
+        const s = hovered >= 0 ? slices[hovered] : null;
+        if (s) {
+          if (s.empty) {
+            // Assign current tab to empty slice
+            const activeTab = openTabs.find((t) => t.active);
+            if (activeTab) {
+              chrome.runtime.sendMessage({
+                type: "SET_SLOT",
+                slotIndex: hovered,
+                assignment: {
+                  url: activeTab.url,
+                  title: activeTab.title,
+                  favIconUrl: activeTab.favIconUrl || "",
+                },
+              });
+            }
+            goTo = null; // Don't switch tabs, just close
+          } else if (s.online && s.live) {
+            // Switch to occupied slice
+            goTo = s.live;
+          }
         }
+        e.preventDefault();
+        e.stopPropagation();
+        dismiss();
         return;
       }
-
-      if (!isOpen) return;
-
-      const s = hovered >= 0 ? slices[hovered] : null;
-      if (s?.online && s.live) goTo = s.live;
-      dismiss();
-    },
-    true,
-  );
-
-  document.addEventListener(
-    "auxclick",
-    (e) => {
-      if (triggerMatches(e)) e.preventDefault();
     },
     true,
   );
@@ -680,23 +479,85 @@
   document.addEventListener(
     "keydown",
     (e) => {
-      if (e.key !== "Escape") return;
-      if (PANEL.classList.contains("on")) closePanel();
-      else if (isOpen) {
-        goTo = null;
-        dismiss();
+      if (
+        e.altKey &&
+        e.key.toLowerCase() === instantKey.toLowerCase() &&
+        !e.repeat
+      ) {
+        e.preventDefault();
+        if (!comboActive) {
+          comboActive = true;
+          if (!isOpen && !isLoading) {
+            show(
+              cursorX || window.innerWidth / 2,
+              cursorY || window.innerHeight / 2,
+            );
+          }
+        }
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        comboActive = false;
+        cancelRequested = true;
+        if (isOpen || isLoading) {
+          goTo = null;
+          dismiss();
+        }
       }
     },
     true,
   );
 
-  // ── Init ──────────────────────────────────────────────────────────────────
+  document.addEventListener(
+    "keyup",
+    (e) => {
+      if (
+        comboActive &&
+        (e.key === "Alt" || e.key.toLowerCase() === instantKey.toLowerCase())
+      ) {
+        comboActive = false;
+        if (isLoading) {
+          releaseQueued = true;
+          return;
+        }
+        if (isOpen) {
+          e.preventDefault();
+          executeAndDismiss();
+        }
+      }
+    },
+    true,
+  );
+
+  window.addEventListener(
+    "blur",
+    () => {
+      comboActive = false;
+      cancelRequested = true;
+      if (isOpen || isLoading) dismiss();
+    },
+    true,
+  );
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      comboActive = false;
+      cancelRequested = true;
+      if (isOpen || isLoading) dismiss();
+    }
+  });
+
+  // ── Init ─────────────────────────────────────────────────────────────────
   buildDOM();
-  chrome.storage.sync.get({ trigger: "both" }, (data) => {
-    trigger = data.trigger || "both";
+  chrome.storage.sync.get({ customKey: "q" }, (data) => {
+    instantKey = data.customKey || "q";
+    updateHint();
   });
   chrome.storage.onChanged.addListener((changes) => {
-    if (changes.trigger) trigger = changes.trigger.newValue || "both";
+    if (changes.customKey) {
+      instantKey = changes.customKey.newValue || "q";
+      updateHint();
+    }
   });
-  console.log("[TabWheel] ready v7");
+  console.log("[TabWheel] ready v12 (Click to Add, Right-Click to Delete)");
 })();
