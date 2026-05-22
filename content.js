@@ -1,4 +1,4 @@
-// TabWheel Radial — Content Script v13
+// TabWheel Radial — Content Script v14 (Fixed & Optimized)
 (function () {
   if (window.__tabWheelLoaded) return;
   window.__tabWheelLoaded = true;
@@ -22,8 +22,7 @@
   let slots = {};
   let slotCount = 8;
   let releaseQueued = false;
-  let dismissGeneration = 0;
-  let wheelSession = 0;
+  let wheelSession = 0; // Tracks the current wheel lifecycle
 
   // Keyboard combo
   let instantKey = "q";
@@ -32,20 +31,19 @@
   let comboActive = false;
 
   // Middle-click tracking
-  // mouseTriggered = true means wheel was opened by middle-click,
-  // so mouseup(button=1) should close it (switch-only, no assign/edit).
   let mouseTriggered = false;
-  let mouseOpenedAt = 0; // timestamp of last middle-click open, for auxclick guard
+  let mouseDismissedAt = 0; // timestamp of last middle-click dismiss, for auxclick guard
 
   // ── DOM refs ─────────────────────────────────────────────────────────────
   let ROOT, BACK, SVG, HUB, LBL, HINT;
-
   const NS = "http://www.w3.org/2000/svg";
+
   function el(tag, a) {
     const e = document.createElementNS(NS, tag);
     if (a) for (const k in a) e.setAttribute(k, a[k]);
     return e;
   }
+
   function mk(tag, id) {
     const e = document.createElement(tag);
     if (id) e.id = id;
@@ -56,6 +54,7 @@
     const a = ((deg - 90) * Math.PI) / 180;
     return [r * Math.cos(a), r * Math.sin(a)];
   }
+
   function wedge(r1, r2, a0, a1) {
     const [ax, ay] = xy(r1, a0),
       [bx, by] = xy(r2, a0);
@@ -74,7 +73,6 @@
       #tw-root{all:initial;position:fixed!important;inset:0!important;z-index:2147483647!important;pointer-events:none!important;font-family:system-ui,sans-serif!important;display:none!important;}
       #tw-root.open, #tw-root.dismissing{display:block!important;}
       #tw-root.open{pointer-events:all!important;}
-
       #tw-back{position:fixed;inset:0;background:rgba(0,0,0,.42);backdrop-filter:blur(2px);opacity:0;transition:opacity .15s;}
       #tw-root.open #tw-back{opacity:1;}
 
@@ -153,6 +151,16 @@
     const defs = el("defs");
     SVG.appendChild(defs);
 
+    // Optimization: O(1) Tab Lookups
+    const tabByUrl = new Map(openTabs.map((t) => [t.url, t]));
+    const tabByHost = new Map();
+    for (const t of openTabs) {
+      try {
+        const host = new URL(t.url).hostname;
+        if (!tabByHost.has(host)) tabByHost.set(host, t);
+      } catch {}
+    }
+
     for (let i = 0; i < n; i++) {
       const a0 = i * per + gap / 2;
       const a1 = (i + 1) * per - gap / 2;
@@ -162,16 +170,18 @@
       const asgn = slots[String(i)] || null;
       const empty = !asgn;
       let live = null;
+
       if (asgn) {
-        live =
-          openTabs.find((t) => {
-            try {
-              return new URL(t.url).hostname === new URL(asgn.url).hostname;
-            } catch {
-              return false;
-            }
-          }) || null;
+        // Fix: Exact URL match first, then hostname fallback
+        live = tabByUrl.get(asgn.url) || null;
+        if (!live) {
+          try {
+            const host = new URL(asgn.url).hostname;
+            live = tabByHost.get(host) || null;
+          } catch {}
+        }
       }
+
       const online = !!live;
       const current = live?.active === true;
 
@@ -275,7 +285,6 @@
         lt.textContent = ch;
         g.appendChild(lt);
       } else {
-        // Empty slot — only show + icon when NOT in mouse mode (mouse mode is switch-only)
         if (!mouseTriggered) {
           const pt = el("text", {
             x: fx,
@@ -309,18 +318,21 @@
         stroke: "none",
       });
       hit.style.pointerEvents = "all";
-      // In mouse mode empty slots are not interactive; filled slots show pointer
       hit.style.cursor = !mouseTriggered || online ? "pointer" : "default";
 
       // Right-click to delete — keyboard mode only (checked at event time)
       hit.addEventListener("contextmenu", (e) => {
         e.preventDefault();
         e.stopPropagation();
-        if (mouseTriggered) return; // ← Never delete in middle-click mode
+        if (mouseTriggered) return;
         if (asgn) {
           chrome.runtime.sendMessage(
             { type: "SET_SLOT", slotIndex: i, assignment: null },
-            () => reload(),
+            () => {
+              if (chrome.runtime.lastError) {
+              } // Suppress MV3 wake-up errors
+              reload();
+            },
           );
         }
       });
@@ -346,16 +358,15 @@
   }
 
   // ── Open / close ──────────────────────────────────────────────────────────
-  function show(x, y, fromMouse = false) {
+  async function show(x, y, fromMouse = false) {
     if (isOpen || isLoading) return;
 
-    // Clear any lingering dismissing state/animations from a previous rapid close/open
     ROOT.classList.remove("dismissing");
     SVG.classList.remove("pop");
     SVG.style.animation = "";
     HUB.style.animation = "";
 
-    const mySession = ++wheelSession; // Increment and capture
+    const mySession = ++wheelSession;
     isLoading = true;
     cancelRequested = false;
     mouseTriggered = fromMouse;
@@ -365,13 +376,9 @@
     goTo = null;
     releaseQueued = false;
 
-    chrome.runtime.sendMessage({ type: "GET_TABS" }, (res) => {
-      if (
-        mySession !== wheelSession ||
-        cancelRequested ||
-        chrome.runtime.lastError ||
-        !res
-      ) {
+    try {
+      const res = await chrome.runtime.sendMessage({ type: "GET_TABS" });
+      if (mySession !== wheelSession || cancelRequested || !res) {
         if (mySession === wheelSession) {
           isLoading = false;
           mouseTriggered = false;
@@ -380,40 +387,39 @@
       }
       openTabs = res.tabs || [];
 
-      chrome.runtime.sendMessage({ type: "GET_SLOTS" }, (sr) => {
-        if (
-          mySession !== wheelSession ||
-          cancelRequested ||
-          chrome.runtime.lastError
-        ) {
-          if (mySession === wheelSession) {
-            isLoading = false;
-            mouseTriggered = false;
-          }
-          return;
+      const sr = await chrome.runtime.sendMessage({ type: "GET_SLOTS" });
+      if (mySession !== wheelSession || cancelRequested) {
+        if (mySession === wheelSession) {
+          isLoading = false;
+          mouseTriggered = false;
         }
-        slots = sr?.slots || {};
-        slotCount = sr?.slotCount || 8;
-        isLoading = false;
-        isOpen = true;
-        place();
-        buildWheel();
-        updateHint();
-        ROOT.classList.add("open");
-        SVG.classList.add("pop");
-        SVG.addEventListener(
-          "animationend",
-          () => SVG.classList.remove("pop"),
-          { once: true },
-        );
+        return;
+      }
 
-        if (releaseQueued) {
-          releaseQueued = false;
-          syncHoverFromCursor();
-          executeAndDismiss();
-        }
+      slots = sr?.slots || {};
+      slotCount = sr?.slotCount || 8;
+      isLoading = false;
+      isOpen = true;
+      place();
+      buildWheel();
+      updateHint();
+      ROOT.classList.add("open");
+      SVG.classList.add("pop");
+      SVG.addEventListener("animationend", () => SVG.classList.remove("pop"), {
+        once: true,
       });
-    });
+
+      if (releaseQueued) {
+        releaseQueued = false;
+        syncHoverFromCursor();
+        executeAndDismiss();
+      }
+    } catch (err) {
+      if (mySession === wheelSession) {
+        isLoading = false;
+        mouseTriggered = false;
+      }
+    }
   }
 
   function dismiss() {
@@ -425,8 +431,15 @@
     goTo = null;
     slices = [];
 
-    if (targetTab)
-      chrome.runtime.sendMessage({ type: "SWITCH_TAB", tabId: targetTab.id });
+    if (targetTab) {
+      chrome.runtime.sendMessage(
+        { type: "SWITCH_TAB", tabId: targetTab.id },
+        () => {
+          if (chrome.runtime.lastError) {
+          } // Suppress MV3 wake-up errors
+        },
+      );
+    }
 
     LBL.classList.remove("on");
     hovered = -1;
@@ -434,13 +447,12 @@
     ROOT.classList.add("dismissing");
     ROOT.classList.remove("open");
 
-    const mySession = wheelSession; // Capture the session this dismiss belongs to
+    mouseDismissedAt = Date.now(); // Track dismiss time for auxclick guard
+
+    const mySession = wheelSession;
 
     const cleanup = () => {
-      // If a NEW wheel has started opening since this dismiss was triggered,
-      // DO NOT run cleanup, as it would corrupt the new wheel's state.
       if (mySession !== wheelSession) return;
-
       ROOT.classList.remove("dismissing");
       HUB.style.animation = "";
       SVG.style.animation = "";
@@ -452,7 +464,6 @@
     setTimeout(cleanup, 180);
   }
 
-  // Recompute hovered from current cursor — fixes stationary-cursor release (Bug 4)
   function syncHoverFromCursor() {
     if (!isOpen || slices.length === 0) return;
     const dx = cursorX - originX,
@@ -466,10 +477,9 @@
     setHover(Math.floor(deg / per) % slotCount);
   }
 
-  // Switch on release (keyboard path, or mouse path when called explicitly)
   function executeAndDismiss() {
     if (!isOpen) return;
-    syncHoverFromCursor(); // always sync before reading hovered
+    syncHoverFromCursor();
     const s = hovered >= 0 ? slices[hovered] : null;
     if (s?.online && s.live) goTo = s.live;
     dismiss();
@@ -493,8 +503,6 @@
   }
 
   // ── Global events ─────────────────────────────────────────────────────────
-
-  // Track cursor position for keyboard-triggered open
   window.addEventListener(
     "mousemove",
     (e) => {
@@ -514,12 +522,7 @@
     { capture: true, passive: true },
   );
 
-  // Suppress middle-mouse autoscroll:
-  // 1. pointermove blocks the actual scroll movement while middle is held
-  // 2. A <style> injected on middle-down overrides the autoscroll cursor Chrome shows
-  //    (cursor:auto on <html> conflicts with Chrome's scroll cursor and suppresses it)
   let antiScrollStyle = null;
-
   function blockAutoscrollCursor() {
     if (antiScrollStyle) return;
     antiScrollStyle = document.createElement("style");
@@ -527,7 +530,6 @@
     antiScrollStyle.textContent = "html, * { cursor: default !important; }";
     (document.head || document.documentElement).appendChild(antiScrollStyle);
   }
-
   function unblockAutoscrollCursor() {
     antiScrollStyle?.remove();
     antiScrollStyle = null;
@@ -536,55 +538,45 @@
   window.addEventListener(
     "pointermove",
     (e) => {
-      if (e.buttons === 4) e.preventDefault(); // block autoscroll drag movement
+      if (e.buttons === 4) e.preventDefault();
     },
     { capture: true, passive: false },
   );
 
+  // Merged mousedown listeners
   window.addEventListener(
     "mousedown",
     (e) => {
       if (e.button === 1) blockAutoscrollCursor();
-    },
-    { capture: true, passive: true },
-  );
 
-  window.addEventListener(
-    "mouseup",
-    (e) => {
-      if (e.button === 1) unblockAutoscrollCursor();
-    },
-    { capture: true, passive: true },
-  );
-
-  window.addEventListener(
-    "mousedown",
-    (e) => {
-      // ── Middle-click: open wheel in switch-only mode ──────────────────────
       if (e.button === 1 && !isOpen && !isLoading) {
         e.preventDefault();
         e.stopImmediatePropagation();
-        mouseOpenedAt = Date.now();
-        show(e.clientX, e.clientY, true /* fromMouse */);
+        show(e.clientX, e.clientY, true);
         return;
       }
 
-      // ── Left-click while open in keyboard mode: assign or switch ──────────
       if (e.button === 0 && isOpen && !mouseTriggered) {
         const s = hovered >= 0 ? slices[hovered] : null;
         if (s) {
           if (s.empty) {
             const activeTab = openTabs.find((t) => t.active);
             if (activeTab) {
-              chrome.runtime.sendMessage({
-                type: "SET_SLOT",
-                slotIndex: hovered,
-                assignment: {
-                  url: activeTab.url,
-                  title: activeTab.title,
-                  favIconUrl: activeTab.favIconUrl || "",
+              chrome.runtime.sendMessage(
+                {
+                  type: "SET_SLOT",
+                  slotIndex: hovered,
+                  assignment: {
+                    url: activeTab.url,
+                    title: activeTab.title,
+                    favIconUrl: activeTab.favIconUrl || "",
+                  },
                 },
-              });
+                () => {
+                  if (chrome.runtime.lastError) {
+                  }
+                },
+              );
             }
             goTo = null;
           } else if (s.online && s.live) {
@@ -600,9 +592,14 @@
     true,
   );
 
-  // ── Middle-click release handler (shared logic) ───────────────────────────
-  // Both mouseup and pointerup call this — whichever fires first acts,
-  // the second is a no-op because isOpen is already false after dismiss().
+  window.addEventListener(
+    "mouseup",
+    (e) => {
+      if (e.button === 1) unblockAutoscrollCursor();
+    },
+    { capture: true, passive: true },
+  );
+
   function handleMiddleRelease() {
     if (isLoading) {
       releaseQueued = true;
@@ -619,7 +616,6 @@
     true,
   );
 
-  // pointerup fires more reliably on pages that intercept mouse events (Bug 2 fix)
   window.addEventListener(
     "pointerup",
     (e) => {
@@ -628,16 +624,16 @@
     true,
   );
 
-  // Suppress auxclick (middle-click link navigation) for the full duration of a
-  // mouse-triggered session plus a 150ms grace after dismiss (Bug 3 fix).
+  // Fixed auxclick guard using mouseDismissedAt
   window.addEventListener(
     "auxclick",
     (e) => {
       if (
         e.button === 1 &&
-        (isOpen || isLoading || Date.now() - mouseOpenedAt < 150)
-      )
+        (isOpen || isLoading || Date.now() - mouseDismissedAt < 150)
+      ) {
         e.preventDefault();
+      }
     },
     true,
   );
@@ -727,5 +723,5 @@
       updateHint();
     }
   });
-  console.log("[TabWheel] ready v13");
+  console.log("[TabWheel] ready v14 (Fixed & Optimized)");
 })();

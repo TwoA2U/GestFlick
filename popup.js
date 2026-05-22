@@ -1,9 +1,7 @@
-// TabWheel — Popup Script v4
-
+// TabWheel — Popup Script v5 (Fixed Ghost Data)
 const DEFAULTS = { slotCount: 8, slots: {}, customKey: "q" };
 const MIN_SLOTS = 2;
 const MAX_SLOTS = 9;
-
 let cfg = { ...DEFAULTS };
 let saveTimer;
 
@@ -31,7 +29,6 @@ function renderSlots() {
   const grid = document.getElementById("slotGrid");
   if (!grid) return;
   grid.innerHTML = "";
-
   const count = cfg.slotCount || 8;
   const cols = count <= 4 ? count : Math.ceil(count / 2);
   grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
@@ -103,9 +100,16 @@ function renderStepper() {
 stepDown.addEventListener("click", () => {
   if (cfg.slotCount <= MIN_SLOTS) return;
   cfg.slotCount--;
+
+  // Fix: Prune deleted slots from storage
+  const keysToDelete = Object.keys(cfg.slots).filter(
+    (k) => Number(k) >= cfg.slotCount,
+  );
+  keysToDelete.forEach((k) => delete cfg.slots[k]);
+
   renderStepper();
   renderSlots();
-  save();
+  save({ slots: cfg.slots });
 });
 
 stepUp.addEventListener("click", () => {
@@ -132,8 +136,6 @@ keyInput.addEventListener("click", () => {
 keyInput.addEventListener("keydown", (e) => {
   e.preventDefault();
   e.stopPropagation();
-
-  // Ignore modifier-only keys and Escape
   if (["Alt", "Shift", "Control", "Meta", "Escape", "Tab"].includes(e.key)) {
     if (e.key === "Escape") {
       keyInput.classList.remove("recording");
@@ -141,11 +143,8 @@ keyInput.addEventListener("keydown", (e) => {
     }
     return;
   }
-
   const k = e.key.toLowerCase();
-  // Only allow a-z letters
   if (!/^[a-z]$/.test(k)) return;
-
   cfg.customKey = k;
   keyInput.classList.remove("recording");
   renderKey();

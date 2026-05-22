@@ -1,19 +1,17 @@
 // TabWheel Radial — Background Service Worker (v2, Manual Slots)
-
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-
   // Return all tabs in current window
   if (msg.type === "GET_TABS") {
     chrome.tabs.query({ currentWindow: true }, (tabs) => {
       const list = tabs
         .sort((a, b) => a.index - b.index)
-        .map(t => ({
-          id:         t.id,
-          index:      t.index,
-          title:      t.title      || "Untitled",
-          url:        t.url        || "",
+        .map((t) => ({
+          id: t.id,
+          index: t.index,
+          title: t.title || "Untitled",
+          url: t.url || "",
           favIconUrl: t.favIconUrl || "",
-          active:     t.active,
+          active: t.active,
         }));
       sendResponse({ tabs: list });
     });
@@ -22,8 +20,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   // Switch to a tab by id
   if (msg.type === "SWITCH_TAB") {
-    chrome.tabs.update(msg.tabId, { active: true });
-    sendResponse({ ok: true });
+    chrome.tabs.update(msg.tabId, { active: true }, () => {
+      if (chrome.runtime.lastError) {
+      } // Suppress errors if tab was closed
+      sendResponse({ ok: true });
+    });
     return true;
   }
 
@@ -49,9 +50,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
-  // Save slot count (4 or 8)
+  // Save slot count
   if (msg.type === "SET_SLOT_COUNT") {
-    chrome.storage.sync.set({ slotCount: msg.count }, () => sendResponse({ ok: true }));
+    chrome.storage.sync.set({ slotCount: msg.count }, () =>
+      sendResponse({ ok: true }),
+    );
     return true;
   }
 });
