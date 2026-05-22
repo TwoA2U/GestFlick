@@ -1,7 +1,12 @@
-// TabWheel Radial — Content Script v14 (Fixed & Optimized)
+// TabWheel Radial — Content Script v15 (Fixed & Optimized)
 (function () {
   if (window.__tabWheelLoaded) return;
   window.__tabWheelLoaded = true;
+
+  const DEV = false;
+  function dbg(...args) {
+    if (DEV) console.debug("[TabWheel]", ...args);
+  }
 
   // ── Constants ────────────────────────────────────────────────────────────
   const OUTER_R = 140;
@@ -17,12 +22,15 @@
     originY = 0;
   let slices = [];
   let hovered = -1;
+  let prevHovered = -1; // [PERF-3] track previous hover for O(1) update
   let goTo = null;
   let openTabs = [];
+  let tabByUrl = new Map(); // [PERF-2] built once when openTabs is assigned
+  let tabByHost = new Map(); // [PERF-2]
   let slots = {};
   let slotCount = 8;
   let releaseQueued = false;
-  let wheelSession = 0; // Tracks the current wheel lifecycle
+  let wheelSession = 0;
 
   // Keyboard combo
   let instantKey = "q";
@@ -32,7 +40,10 @@
 
   // Middle-click tracking
   let mouseTriggered = false;
-  let mouseDismissedAt = 0; // timestamp of last middle-click dismiss, for auxclick guard
+  let mouseDismissedAt = 0;
+
+  // [BUG-3] Guard against double-firing from both mouseup and pointerup
+  let middleReleaseHandled = false;
 
   // ── DOM refs ─────────────────────────────────────────────────────────────
   let ROOT, BACK, SVG, HUB, LBL, HINT;
@@ -141,25 +152,28 @@
     SVG.style.top = HUB.style.top = LBL.style.top = originY + "px";
   }
 
-  // ── Wheel ─────────────────────────────────────────────────────────────────
-  function buildWheel() {
-    SVG.innerHTML = "";
-    slices = [];
-    const n = slotCount,
-      gap = 3,
-      per = 360 / n;
-    const defs = el("defs");
-    SVG.appendChild(defs);
-
-    // Optimization: O(1) Tab Lookups
-    const tabByUrl = new Map(openTabs.map((t) => [t.url, t]));
-    const tabByHost = new Map();
+  // ── [PERF-2] Build tab lookup maps once when openTabs changes ─────────────
+  function buildTabMaps() {
+    tabByUrl = new Map(openTabs.map((t) => [t.url, t]));
+    tabByHost = new Map();
     for (const t of openTabs) {
       try {
         const host = new URL(t.url).hostname;
         if (!tabByHost.has(host)) tabByHost.set(host, t);
       } catch {}
     }
+  }
+
+  // ── Wheel ─────────────────────────────────────────────────────────────────
+  function buildWheel() {
+    SVG.innerHTML = "";
+    slices = [];
+    prevHovered = -1; // reset on full rebuild
+    const n = slotCount,
+      gap = 3,
+      per = 360 / n;
+    const defs = el("defs");
+    SVG.appendChild(defs);
 
     for (let i = 0; i < n; i++) {
       const a0 = i * per + gap / 2;
@@ -172,7 +186,7 @@
       let live = null;
 
       if (asgn) {
-        // Fix: Exact URL match first, then hostname fallback
+        // Exact URL match first, then hostname fallback
         live = tabByUrl.get(asgn.url) || null;
         if (!live) {
           try {
@@ -320,7 +334,7 @@
       hit.style.pointerEvents = "all";
       hit.style.cursor = !mouseTriggered || online ? "pointer" : "default";
 
-      // Right-click to delete — keyboard mode only (checked at event time)
+      // Right-click to delete — keyboard mode only
       hit.addEventListener("contextmenu", (e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -329,8 +343,8 @@
           chrome.runtime.sendMessage(
             { type: "SET_SLOT", slotIndex: i, assignment: null },
             () => {
-              if (chrome.runtime.lastError) {
-              } // Suppress MV3 wake-up errors
+              if (chrome.runtime.lastError)
+                dbg("SET_SLOT:", chrome.runtime.lastError.message);
               reload();
             },
           );
@@ -345,13 +359,17 @@
 
   function reload() {
     chrome.runtime.sendMessage({ type: "GET_SLOTS" }, (r) => {
-      if (chrome.runtime.lastError) return;
+      if (chrome.runtime.lastError) {
+        dbg("GET_SLOTS:", chrome.runtime.lastError.message);
+        return;
+      }
       slots = r?.slots || {};
       slotCount = r?.slotCount || 8;
       buildWheel();
       if (hovered >= 0 && hovered < slices.length) {
         const temp = hovered;
         hovered = -1;
+        prevHovered = -1;
         setHover(temp);
       }
     });
@@ -373,31 +391,37 @@
     originX = x;
     originY = y;
     hovered = -1;
+    prevHovered = -1;
     goTo = null;
     releaseQueued = false;
+    middleReleaseHandled = false; // [BUG-3] reset guard for this open session
 
     try {
-      const res = await chrome.runtime.sendMessage({ type: "GET_TABS" });
-      if (mySession !== wheelSession || cancelRequested || !res) {
+      // [PERF-1] Fetch tabs and slots in parallel
+      const [tabsRes, slotsRes] = await Promise.all([
+        new Promise((res) =>
+          chrome.runtime.sendMessage({ type: "GET_TABS" }, res),
+        ),
+        new Promise((res) =>
+          chrome.runtime.sendMessage({ type: "GET_SLOTS" }, res),
+        ),
+      ]);
+
+      // [BUG-2] Check session validity after both resolve; reset mouseTriggered on all exits
+      if (mySession !== wheelSession || cancelRequested || !tabsRes) {
         if (mySession === wheelSession) {
           isLoading = false;
-          mouseTriggered = false;
+          mouseTriggered = false; // [BUG-2] fixed: was missing from this path
         }
         return;
       }
-      openTabs = res.tabs || [];
 
-      const sr = await chrome.runtime.sendMessage({ type: "GET_SLOTS" });
-      if (mySession !== wheelSession || cancelRequested) {
-        if (mySession === wheelSession) {
-          isLoading = false;
-          mouseTriggered = false;
-        }
-        return;
-      }
+      openTabs = tabsRes.tabs || [];
+      buildTabMaps(); // [PERF-2] build maps once here, not inside buildWheel
 
-      slots = sr?.slots || {};
-      slotCount = sr?.slotCount || 8;
+      slots = slotsRes?.slots || {};
+      slotCount = slotsRes?.slotCount || 8;
+
       isLoading = false;
       isOpen = true;
       place();
@@ -417,7 +441,7 @@
     } catch (err) {
       if (mySession === wheelSession) {
         isLoading = false;
-        mouseTriggered = false;
+        mouseTriggered = false; // [BUG-2] also applied in catch path
       }
     }
   }
@@ -427,6 +451,8 @@
     isOpen = false;
     isLoading = false;
     cancelRequested = true;
+    releaseQueued = false; // [BUG-1] clear queued release on any dismiss/cancel
+    middleReleaseHandled = false; // [BUG-3] reset for next session
     const targetTab = goTo;
     goTo = null;
     slices = [];
@@ -435,19 +461,20 @@
       chrome.runtime.sendMessage(
         { type: "SWITCH_TAB", tabId: targetTab.id },
         () => {
-          if (chrome.runtime.lastError) {
-          } // Suppress MV3 wake-up errors
+          if (chrome.runtime.lastError)
+            dbg("SWITCH_TAB:", chrome.runtime.lastError.message);
         },
       );
     }
 
     LBL.classList.remove("on");
     hovered = -1;
+    prevHovered = -1;
 
     ROOT.classList.add("dismissing");
     ROOT.classList.remove("open");
 
-    mouseDismissedAt = Date.now(); // Track dismiss time for auxclick guard
+    mouseDismissedAt = Date.now();
 
     const mySession = wheelSession;
 
@@ -488,8 +515,18 @@
   // ── Hover ─────────────────────────────────────────────────────────────────
   function setHover(i) {
     if (i === hovered) return;
+
+    // [PERF-3] O(1) update: only touch the two changing slices
+    if (prevHovered >= 0 && prevHovered < slices.length) {
+      slices[prevHovered].bg.classList.remove("hot");
+    }
+    if (i >= 0 && i < slices.length && slices[i].online) {
+      slices[i].bg.classList.add("hot");
+    }
+
+    prevHovered = hovered;
     hovered = i;
-    slices.forEach((s, j) => s.bg.classList.toggle("hot", j === i && s.online));
+
     const s = i >= 0 ? slices[i] : null;
     if (s) {
       LBL.textContent = (s.live?.title || s.asgn?.title || "").slice(0, 42);
@@ -543,7 +580,6 @@
     { capture: true, passive: false },
   );
 
-  // Merged mousedown listeners
   window.addEventListener(
     "mousedown",
     (e) => {
@@ -573,8 +609,8 @@
                   },
                 },
                 () => {
-                  if (chrome.runtime.lastError) {
-                  }
+                  if (chrome.runtime.lastError)
+                    dbg("SET_SLOT:", chrome.runtime.lastError.message);
                 },
               );
             }
@@ -592,15 +628,23 @@
     true,
   );
 
+  // [BUG-4] mouseup: only unblock cursor here for the non-wheel case (autoscroll drag).
+  // The wheel's unblock is handled in dismiss() cleanup.
   window.addEventListener(
     "mouseup",
     (e) => {
-      if (e.button === 1) unblockAutoscrollCursor();
+      if (e.button === 1 && !isOpen && !isLoading) {
+        unblockAutoscrollCursor();
+      }
     },
     { capture: true, passive: true },
   );
 
   function handleMiddleRelease() {
+    // [BUG-3] Guard against double-firing from mouseup + pointerup on the same event
+    if (middleReleaseHandled) return;
+    middleReleaseHandled = true;
+
     if (isLoading) {
       releaseQueued = true;
       return;
@@ -615,7 +659,6 @@
     },
     true,
   );
-
   window.addEventListener(
     "pointerup",
     (e) => {
@@ -624,7 +667,7 @@
     true,
   );
 
-  // Fixed auxclick guard using mouseDismissedAt
+  // Auxclick guard
   window.addEventListener(
     "auxclick",
     (e) => {
@@ -711,17 +754,32 @@
     }
   });
 
+  // ── [BUG-5] Storage change listener — keep open wheel in sync with popup ──
+  chrome.storage.onChanged.addListener((changes) => {
+    if (changes.customKey) {
+      instantKey = changes.customKey.newValue || "q";
+      updateHint();
+    }
+    // Reflect slot/slotCount changes from popup while wheel is open
+    if ((changes.slots || changes.slotCount) && isOpen) {
+      if (changes.slots) slots = changes.slots.newValue || {};
+      if (changes.slotCount) slotCount = changes.slotCount.newValue || 8;
+      buildWheel();
+      // Re-apply hover if still valid
+      if (hovered >= 0 && hovered < slices.length) {
+        const tmp = hovered;
+        hovered = -1;
+        prevHovered = -1;
+        setHover(tmp);
+      }
+    }
+  });
+
   // ── Init ──────────────────────────────────────────────────────────────────
   buildDOM();
   chrome.storage.sync.get({ customKey: "q" }, (data) => {
     instantKey = data.customKey || "q";
     updateHint();
   });
-  chrome.storage.onChanged.addListener((changes) => {
-    if (changes.customKey) {
-      instantKey = changes.customKey.newValue || "q";
-      updateHint();
-    }
-  });
-  console.log("[TabWheel] ready v14 (Fixed & Optimized)");
+  console.log("[TabWheel] ready v15 (Fixed & Optimized)");
 })();

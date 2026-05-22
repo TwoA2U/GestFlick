@@ -101,7 +101,7 @@ stepDown.addEventListener("click", () => {
   if (cfg.slotCount <= MIN_SLOTS) return;
   cfg.slotCount--;
 
-  // Fix: Prune deleted slots from storage
+  // Prune slots that are now out of range
   const keysToDelete = Object.keys(cfg.slots).filter(
     (k) => Number(k) >= cfg.slotCount,
   );
