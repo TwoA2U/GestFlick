@@ -1,33 +1,40 @@
-// TabWheel Radial v2 — Popup Script (Cleaned)
-const DEFAULTS = { trigger: "both", slotCount: 8, slots: {}, customKey: "q" };
+// TabWheel — Popup Script v4
+
+const DEFAULTS = { slotCount: 8, slots: {}, customKey: "q" };
+const MIN_SLOTS = 2;
+const MAX_SLOTS = 9;
+
 let cfg = { ...DEFAULTS };
 let saveTimer;
-const savedEl = document.getElementById("saved");
 
+const savedEl = document.getElementById("saved");
+const stepVal = document.getElementById("stepVal");
+const stepDown = document.getElementById("stepDown");
+const stepUp = document.getElementById("stepUp");
+const keyInput = document.getElementById("keyInput");
+const hintCombo = document.getElementById("hintCombo");
+
+// ── Load ──────────────────────────────────────────────────────────────────
 chrome.storage.sync.get(DEFAULTS, (s) => {
   cfg = { ...DEFAULTS, ...s };
-  render();
-  renderSlots();
+  renderAll();
 });
 
-function render() {
-  document
-    .querySelectorAll("[data-count]")
-    .forEach((b) =>
-      b.classList.toggle("active", Number(b.dataset.count) === cfg.slotCount),
-    );
-  document
-    .querySelectorAll("[data-trigger]")
-    .forEach((b) =>
-      b.classList.toggle("active", b.dataset.trigger === cfg.trigger),
-    );
+function renderAll() {
+  renderSlots();
+  renderStepper();
+  renderKey();
 }
 
+// ── Slot grid ─────────────────────────────────────────────────────────────
 function renderSlots() {
   const grid = document.getElementById("slotGrid");
   if (!grid) return;
   grid.innerHTML = "";
+
   const count = cfg.slotCount || 8;
+  const cols = count <= 4 ? count : Math.ceil(count / 2);
+  grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
 
   for (let i = 0; i < count; i++) {
     const slot = cfg.slots?.[String(i)];
@@ -52,13 +59,14 @@ function renderSlots() {
       } catch {
         label = slot.title || "";
       }
+
       const name = document.createElement("div");
       name.className = "slot-name";
       name.textContent = label;
       cell.appendChild(name);
 
       const clr = document.createElement("div");
-      clr.className = "slot-clear";
+      clr.className = "slot-x";
       clr.textContent = "✕";
       clr.title = "Clear slot";
       clr.addEventListener("click", (e) => {
@@ -84,6 +92,72 @@ function renderSlots() {
   }
 }
 
+// ── Stepper ───────────────────────────────────────────────────────────────
+function renderStepper() {
+  const n = cfg.slotCount;
+  stepVal.textContent = n;
+  stepDown.disabled = n <= MIN_SLOTS;
+  stepUp.disabled = n >= MAX_SLOTS;
+}
+
+stepDown.addEventListener("click", () => {
+  if (cfg.slotCount <= MIN_SLOTS) return;
+  cfg.slotCount--;
+  renderStepper();
+  renderSlots();
+  save();
+});
+
+stepUp.addEventListener("click", () => {
+  if (cfg.slotCount >= MAX_SLOTS) return;
+  cfg.slotCount++;
+  renderStepper();
+  renderSlots();
+  save();
+});
+
+// ── Shortcut key ──────────────────────────────────────────────────────────
+function renderKey() {
+  const k = (cfg.customKey || "q").toUpperCase();
+  keyInput.value = k;
+  if (hintCombo) hintCombo.textContent = `Alt+${k}`;
+}
+
+keyInput.addEventListener("click", () => {
+  keyInput.classList.add("recording");
+  keyInput.value = "…";
+  keyInput.focus();
+});
+
+keyInput.addEventListener("keydown", (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+
+  // Ignore modifier-only keys and Escape
+  if (["Alt", "Shift", "Control", "Meta", "Escape", "Tab"].includes(e.key)) {
+    if (e.key === "Escape") {
+      keyInput.classList.remove("recording");
+      renderKey();
+    }
+    return;
+  }
+
+  const k = e.key.toLowerCase();
+  // Only allow a-z letters
+  if (!/^[a-z]$/.test(k)) return;
+
+  cfg.customKey = k;
+  keyInput.classList.remove("recording");
+  renderKey();
+  save();
+});
+
+keyInput.addEventListener("blur", () => {
+  keyInput.classList.remove("recording");
+  renderKey();
+});
+
+// ── Save / flash ──────────────────────────────────────────────────────────
 function flashSaved() {
   clearTimeout(saveTimer);
   if (savedEl) {
@@ -94,7 +168,6 @@ function flashSaved() {
 
 function save(extra = {}) {
   chrome.storage.sync.set({
-    trigger: cfg.trigger,
     slotCount: cfg.slotCount,
     customKey: cfg.customKey,
     ...extra,
@@ -102,23 +175,7 @@ function save(extra = {}) {
   flashSaved();
 }
 
-document.querySelectorAll("[data-count]").forEach((b) => {
-  b.addEventListener("click", () => {
-    cfg.slotCount = Number(b.dataset.count);
-    render();
-    renderSlots();
-    save();
-  });
-});
-
-document.querySelectorAll("[data-trigger]").forEach((b) => {
-  b.addEventListener("click", () => {
-    cfg.trigger = b.dataset.trigger;
-    render();
-    save();
-  });
-});
-
+// ── Live storage updates (from wheel assigning slots) ─────────────────────
 chrome.storage.onChanged.addListener((changes) => {
   if (changes.slots) {
     cfg.slots = changes.slots.newValue || {};
@@ -126,7 +183,11 @@ chrome.storage.onChanged.addListener((changes) => {
   }
   if (changes.slotCount) {
     cfg.slotCount = changes.slotCount.newValue;
-    render();
+    renderStepper();
     renderSlots();
+  }
+  if (changes.customKey) {
+    cfg.customKey = changes.customKey.newValue || "q";
+    renderKey();
   }
 });

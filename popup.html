@@ -1,254 +1,619 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8"/>
-  <title>TabWheel</title>
-  <style>
-    @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700&family=DM+Sans:wght@300;400;500&display=swap');
+    <head>
+        <meta charset="UTF-8" />
+        <title>TabWheel</title>
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link
+            href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,300&display=swap"
+            rel="stylesheet"
+        />
+        <style>
+            :root {
+                --bg: #080810;
+                --surface: #0f0f1a;
+                --card: #131320;
+                --border: #1e1e2e;
+                --border2: #252535;
+                --accent: #7b6cff;
+                --accent2: #a99fff;
+                --gold: #ffc84a;
+                --gold-dim: rgba(255, 200, 74, 0.18);
+                --red: #ff5f5f;
+                --green: #3ddba0;
+                --text: #d8daf0;
+                --muted: #525270;
+                --muted2: #3a3a55;
+                --mono: "Space Mono", monospace;
+                --sans: "DM Sans", sans-serif;
+            }
 
-    :root {
-      --bg:     #0d0d12;
-      --card:   #161620;
-      --border: #23232f;
-      --accent: #5b8cff;
-      --gold:   #ffcc50;
-      --glow:   rgba(91,140,255,0.18);
-      --text:   #dde0f0;
-      --muted:  #606080;
-      --ok:     #4ade80;
-      --r:      10px;
-    }
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      width: 300px;
-      background: var(--bg);
-      color: var(--text);
-      font-family: 'DM Sans', sans-serif;
-      font-size: 13px;
-    }
+            * {
+                box-sizing: border-box;
+                margin: 0;
+                padding: 0;
+            }
 
-    /* Header */
-    .hdr {
-      display: flex; align-items: center; gap: 10px;
-      padding: 14px 15px 12px;
-      background: var(--card);
-      border-bottom: 1px solid var(--border);
-    }
-    .logo {
-      width: 32px; height: 32px; border-radius: 9px;
-      background: var(--accent);
-      display: flex; align-items: center; justify-content: center;
-      box-shadow: 0 0 16px var(--glow); flex-shrink: 0;
-    }
-    .logo svg { width: 18px; height: 18px; }
-    .hdr-txt h1 { font-family:'Syne',sans-serif; font-size:15px; font-weight:700; letter-spacing:-.3px; }
-    .hdr-txt p  { font-size:11px; color:var(--muted); margin-top:1px; }
-    .dot {
-      margin-left:auto; width:7px; height:7px; border-radius:50%;
-      background:var(--ok); box-shadow:0 0 7px var(--ok);
-      animation: blink 2.5s ease-in-out infinite;
-    }
-    @keyframes blink { 0%,100%{opacity:1}50%{opacity:.25} }
+            body {
+                width: 320px;
+                background: var(--bg);
+                color: var(--text);
+                font-family: var(--sans);
+                font-size: 13px;
+                overflow-x: hidden;
+            }
 
-    /* Body */
-    .body { padding: 13px 14px 15px; display:flex; flex-direction:column; gap:12px; }
+            /* ── Header ── */
+            .hdr {
+                display: flex;
+                align-items: center;
+                gap: 11px;
+                padding: 14px 16px 13px;
+                background: var(--surface);
+                border-bottom: 1px solid var(--border);
+                position: relative;
+            }
+            .hdr::after {
+                content: "";
+                position: absolute;
+                bottom: 0;
+                left: 0;
+                right: 0;
+                height: 1px;
+                background: linear-gradient(
+                    90deg,
+                    transparent,
+                    var(--accent),
+                    transparent
+                );
+                opacity: 0.4;
+            }
 
-    /* Section label */
-    .sec { font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:.7px; color:var(--muted); margin-bottom:6px; }
+            .logo-wrap {
+                width: 34px;
+                height: 34px;
+                border-radius: 10px;
+                background: linear-gradient(135deg, #2a245a, #1a1a40);
+                border: 1px solid rgba(123, 108, 255, 0.35);
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                box-shadow:
+                    0 0 20px rgba(123, 108, 255, 0.2),
+                    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+                flex-shrink: 0;
+            }
 
-    /* Card block */
-    .card {
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: var(--r);
-      overflow: hidden;
-    }
+            .hdr-info {
+                flex: 1;
+                min-width: 0;
+            }
+            .hdr-info h1 {
+                font-family: var(--mono);
+                font-size: 14px;
+                font-weight: 700;
+                letter-spacing: -0.5px;
+                color: #e8eaff;
+            }
+            .hdr-info p {
+                font-size: 10.5px;
+                color: var(--muted);
+                margin-top: 1px;
+                font-weight: 300;
+            }
 
-    /* Button grid */
-    .btn-grid { display:grid; gap:5px; }
-    .btn-grid.col2 { grid-template-columns:1fr 1fr; }
-    .btn-grid.col3 { grid-template-columns:repeat(3,1fr); }
-    .btn-grid.col4 { grid-template-columns:repeat(4,1fr); }
+            .status-dot {
+                width: 6px;
+                height: 6px;
+                border-radius: 50%;
+                background: var(--green);
+                box-shadow: 0 0 8px var(--green);
+                flex-shrink: 0;
+                animation: pulse 2.8s ease-in-out infinite;
+            }
+            @keyframes pulse {
+                0%,
+                100% {
+                    opacity: 1;
+                    transform: scale(1);
+                }
+                50% {
+                    opacity: 0.3;
+                    transform: scale(0.7);
+                }
+            }
 
-    .opt {
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      color: var(--muted);
-      font-size: 12px;
-      font-family: 'DM Sans',sans-serif;
-      padding: 8px 6px;
-      text-align: center;
-      cursor: pointer;
-      transition: all .14s;
-    }
-    .opt:hover { border-color:var(--accent); color:var(--text); }
-    .opt.active { background:rgba(91,140,255,.1); border-color:var(--accent); color:var(--accent); font-weight:500; }
+            /* ── Body ── */
+            .body {
+                padding: 14px 14px 16px;
+                display: flex;
+                flex-direction: column;
+                gap: 14px;
+            }
 
-    /* Slot overview grid */
-    .slot-grid {
-      display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      gap: 5px;
-      padding: 10px;
-    }
+            /* ── Section label ── */
+            .sec-label {
+                font-family: var(--mono);
+                font-size: 9px;
+                font-weight: 700;
+                letter-spacing: 1.2px;
+                text-transform: uppercase;
+                color: var(--muted);
+                margin-bottom: 7px;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+            .sec-label::after {
+                content: "";
+                flex: 1;
+                height: 1px;
+                background: var(--border2);
+            }
 
-    .slot-cell {
-      border: 1px dashed rgba(255,255,255,0.1);
-      border-radius: 7px;
-      padding: 7px 5px 5px;
-      display: flex; flex-direction:column; align-items:center; gap:4px;
-      position: relative;
-      min-height: 56px;
-      transition: border-color .15s;
-    }
-    .slot-cell.filled {
-      border-color: rgba(91,140,255,0.3);
-      border-style: solid;
-      background: rgba(91,140,255,0.04);
-    }
-    .slot-cell.filled:hover { border-color: rgba(255,100,100,0.5); background:rgba(255,80,80,0.05); }
-    .slot-cell.filled:hover .slot-clear { opacity:1; }
+            /* ── Slot grid ── */
+            .slot-grid {
+                display: grid;
+                gap: 5px;
+                padding: 10px;
+                background: var(--card);
+                border: 1px solid var(--border);
+                border-radius: 10px;
+            }
+            /* JS sets grid-template-columns */
 
-    .slot-num {
-      font-size: 9px; font-weight:700; color:var(--muted);
-      position:absolute; top:3px; left:5px;
-    }
-    .slot-fav { width:16px; height:16px; object-fit:contain; border-radius:3px; }
-    .slot-name {
-      font-size:10px; color:rgba(220,220,240,.7);
-      text-align:center; line-height:1.2;
-      word-break:break-all;
-      max-width:100%;
-      overflow:hidden;
-      display:-webkit-box;
-      -webkit-line-clamp:2;
-      -webkit-box-orient:vertical;
-    }
-    .slot-empty-icon { font-size:18px; color:rgba(255,255,255,.08); margin-top:4px; }
+            .slot-cell {
+                border: 1px dashed var(--muted2);
+                border-radius: 7px;
+                padding: 7px 4px 5px;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                gap: 3px;
+                position: relative;
+                min-height: 52px;
+                transition:
+                    border-color 0.15s,
+                    background 0.15s;
+                cursor: default;
+            }
+            .slot-cell.filled {
+                border-style: solid;
+                border-color: rgba(123, 108, 255, 0.4);
+                background: rgba(123, 108, 255, 0.05);
+            }
+            .slot-cell.filled:hover {
+                border-color: rgba(255, 95, 95, 0.5);
+                background: rgba(255, 80, 80, 0.06);
+            }
+            .slot-cell.filled:hover .slot-x {
+                opacity: 1;
+            }
 
-    .slot-clear {
-      position:absolute; top:2px; right:3px;
-      font-size:9px; color:rgba(255,80,80,.8);
-      cursor:pointer; opacity:0; transition:opacity .15s;
-      line-height:1;
-    }
-    .slot-clear:hover { color:rgba(255,120,120,1); }
+            .slot-num {
+                font-family: var(--mono);
+                font-size: 8px;
+                font-weight: 700;
+                color: var(--muted);
+                position: absolute;
+                top: 3px;
+                left: 5px;
+            }
+            .slot-fav {
+                width: 15px;
+                height: 15px;
+                border-radius: 3px;
+                object-fit: contain;
+            }
+            .slot-name {
+                font-size: 9px;
+                color: rgba(200, 202, 230, 0.65);
+                text-align: center;
+                line-height: 1.2;
+                word-break: break-all;
+                max-width: 100%;
+                overflow: hidden;
+                display: -webkit-box;
+                -webkit-line-clamp: 2;
+                -webkit-box-orient: vertical;
+            }
+            .slot-empty-icon {
+                font-size: 16px;
+                color: var(--muted2);
+                margin-top: 5px;
+            }
+            .slot-x {
+                position: absolute;
+                top: 2px;
+                right: 3px;
+                font-size: 8px;
+                color: var(--red);
+                cursor: pointer;
+                opacity: 0;
+                transition: opacity 0.15s;
+                line-height: 1;
+            }
 
-    /* How-to block */
-    .step { display:flex; align-items:flex-start; gap:8px; padding:7px 12px; }
-    .step + .step { border-top:1px solid var(--border); }
-    .sn {
-      width:16px; height:16px; border-radius:50%;
-      background:rgba(91,140,255,.12);
-      border:1px solid rgba(91,140,255,.3);
-      color:var(--accent); font-size:9px; font-weight:700;
-      display:flex;align-items:center;justify-content:center;
-      flex-shrink:0; margin-top:1px;
-    }
-    .st { font-size:11.5px; color:var(--text); line-height:1.45; }
-    .st code {
-      font-family:monospace; font-size:11px;
-      background:rgba(255,255,255,.07); border:1px solid rgba(255,255,255,.1);
-      border-radius:3px; padding:1px 5px; color:var(--accent);
-    }
-    .st .gold { color:var(--gold); }
+            /* ── Slot count stepper ── */
+            .stepper-row {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                background: var(--card);
+                border: 1px solid var(--border);
+                border-radius: 10px;
+                padding: 10px 14px;
+            }
+            .stepper-label {
+                flex: 1;
+                font-size: 12px;
+                color: var(--text);
+                font-weight: 400;
+            }
+            .stepper-label span {
+                display: block;
+                font-size: 10px;
+                color: var(--muted);
+                margin-top: 1px;
+                font-weight: 300;
+            }
+            .stepper-controls {
+                display: flex;
+                align-items: center;
+                gap: 0;
+                background: var(--surface);
+                border: 1px solid var(--border2);
+                border-radius: 8px;
+                overflow: hidden;
+            }
+            .step-btn {
+                background: none;
+                border: none;
+                color: var(--muted);
+                width: 30px;
+                height: 30px;
+                font-size: 16px;
+                cursor: pointer;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                transition:
+                    background 0.12s,
+                    color 0.12s;
+                font-family: var(--mono);
+            }
+            .step-btn:hover:not(:disabled) {
+                background: rgba(123, 108, 255, 0.12);
+                color: var(--accent2);
+            }
+            .step-btn:disabled {
+                opacity: 0.25;
+                cursor: default;
+            }
+            .step-val {
+                font-family: var(--mono);
+                font-size: 14px;
+                font-weight: 700;
+                color: var(--accent2);
+                min-width: 26px;
+                text-align: center;
+                padding: 0 2px;
+                user-select: none;
+            }
+            .step-sep {
+                width: 1px;
+                height: 18px;
+                background: var(--border2);
+            }
 
-    /* Footer */
-    .ftr {
-      padding:9px 14px; border-top:1px solid var(--border);
-      display:flex; justify-content:space-between; align-items:center;
-      font-size:10px; color:var(--muted);
-    }
-    .saved { color:var(--ok); font-size:11px; opacity:0; transition:opacity .25s; }
-    .saved.show { opacity:1; }
-  </style>
-</head>
-<body>
+            /* ── Shortcut key picker ── */
+            .shortcut-row {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                background: var(--card);
+                border: 1px solid var(--border);
+                border-radius: 10px;
+                padding: 10px 14px;
+            }
+            .shortcut-label {
+                flex: 1;
+                font-size: 12px;
+                color: var(--text);
+            }
+            .shortcut-label span {
+                display: block;
+                font-size: 10px;
+                color: var(--muted);
+                margin-top: 1px;
+                font-weight: 300;
+            }
+            .key-display {
+                display: flex;
+                align-items: center;
+                gap: 5px;
+                flex-shrink: 0;
+            }
+            .key-badge {
+                font-family: var(--mono);
+                font-size: 11px;
+                font-weight: 700;
+                background: var(--surface);
+                border: 1px solid var(--border2);
+                border-radius: 5px;
+                padding: 3px 8px;
+                color: var(--muted);
+                letter-spacing: 0.5px;
+            }
+            .key-sep {
+                font-size: 10px;
+                color: var(--muted);
+                font-family: var(--mono);
+            }
+            .key-input-wrap {
+                position: relative;
+            }
+            .key-input {
+                font-family: var(--mono);
+                font-size: 13px;
+                font-weight: 700;
+                background: rgba(123, 108, 255, 0.1);
+                border: 1px solid rgba(123, 108, 255, 0.4);
+                border-radius: 6px;
+                color: var(--accent2);
+                width: 34px;
+                height: 30px;
+                text-align: center;
+                text-transform: uppercase;
+                outline: none;
+                letter-spacing: 0.5px;
+                cursor: pointer;
+                caret-color: transparent;
+                transition:
+                    border-color 0.15s,
+                    background 0.15s,
+                    box-shadow 0.15s;
+            }
+            .key-input:focus {
+                border-color: var(--accent);
+                background: rgba(123, 108, 255, 0.18);
+                box-shadow: 0 0 0 2px rgba(123, 108, 255, 0.2);
+            }
+            .key-input.recording {
+                border-color: var(--gold);
+                background: var(--gold-dim);
+                color: var(--gold);
+                box-shadow: 0 0 0 2px rgba(255, 200, 74, 0.15);
+                animation: blink-border 0.6s ease-in-out infinite;
+            }
+            @keyframes blink-border {
+                0%,
+                100% {
+                    border-color: var(--gold);
+                }
+                50% {
+                    border-color: rgba(255, 200, 74, 0.3);
+                }
+            }
 
-<div class="hdr">
-  <div class="logo">
-    <svg viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <circle cx="9" cy="9" r="7" stroke="white" stroke-width="1.4"/>
-      <circle cx="9" cy="9" r="2.5" fill="white"/>
-      <line x1="9" y1="2" x2="9" y2="4.8" stroke="white" stroke-width="1.4" stroke-linecap="round"/>
-      <line x1="9" y1="13.2" x2="9" y2="16" stroke="white" stroke-width="1.4" stroke-linecap="round"/>
-      <line x1="2" y1="9" x2="4.8" y2="9" stroke="white" stroke-width="1.4" stroke-linecap="round"/>
-      <line x1="13.2" y1="9" x2="16" y2="9" stroke="white" stroke-width="1.4" stroke-linecap="round"/>
-    </svg>
-  </div>
-  <div class="hdr-txt">
-    <h1>TabWheel</h1>
-    <p>Manual slot assignments</p>
-  </div>
-  <div class="dot"></div>
-</div>
+            /* ── How-to steps ── */
+            .steps-card {
+                background: var(--card);
+                border: 1px solid var(--border);
+                border-radius: 10px;
+                overflow: hidden;
+            }
+            .step-row {
+                display: flex;
+                align-items: flex-start;
+                gap: 10px;
+                padding: 8px 13px;
+                border-bottom: 1px solid var(--border);
+            }
+            .step-row:last-child {
+                border-bottom: none;
+            }
+            .step-n {
+                width: 17px;
+                height: 17px;
+                border-radius: 50%;
+                background: rgba(123, 108, 255, 0.1);
+                border: 1px solid rgba(123, 108, 255, 0.3);
+                color: var(--accent2);
+                font-family: var(--mono);
+                font-size: 8px;
+                font-weight: 700;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                flex-shrink: 0;
+                margin-top: 1px;
+            }
+            .step-t {
+                font-size: 11.5px;
+                color: var(--text);
+                line-height: 1.5;
+                font-weight: 300;
+            }
+            .step-t strong {
+                font-weight: 500;
+                color: #e8eaff;
+            }
+            .step-t .hl {
+                font-family: var(--mono);
+                font-size: 10px;
+                background: rgba(255, 200, 74, 0.1);
+                border: 1px solid rgba(255, 200, 74, 0.2);
+                border-radius: 3px;
+                padding: 1px 5px;
+                color: var(--gold);
+            }
 
-<div class="body">
+            /* ── Footer ── */
+            .ftr {
+                padding: 8px 14px;
+                border-top: 1px solid var(--border);
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+            }
+            .ftr-ver {
+                font-family: var(--mono);
+                font-size: 9px;
+                color: var(--muted);
+                letter-spacing: 0.5px;
+            }
+            .ftr-saved {
+                font-size: 11px;
+                color: var(--green);
+                opacity: 0;
+                transition: opacity 0.25s;
+                display: flex;
+                align-items: center;
+                gap: 4px;
+                font-weight: 500;
+            }
+            .ftr-saved.show {
+                opacity: 1;
+            }
+            .ftr-saved::before {
+                content: "✓";
+                font-family: var(--mono);
+            }
+        </style>
+    </head>
+    <body>
+        <div class="hdr">
+            <div class="logo-wrap">
+                <svg
+                    viewBox="0 0 22 22"
+                    width="18"
+                    height="18"
+                    fill="none"
+                    stroke="white"
+                    stroke-width="1.5"
+                    stroke-linecap="round"
+                >
+                    <circle cx="11" cy="11" r="7.5" />
+                    <circle
+                        cx="11"
+                        cy="11"
+                        r="2.2"
+                        fill="white"
+                        stroke="none"
+                    />
+                    <line x1="11" y1="3.5" x2="11" y2="6" />
+                    <line x1="11" y1="16" x2="11" y2="18.5" />
+                    <line x1="3.5" y1="11" x2="6" y2="11" />
+                    <line x1="16" y1="11" x2="18.5" y2="11" />
+                </svg>
+            </div>
+            <div class="hdr-info">
+                <h1>TabWheel</h1>
+                <p>Radial tab switcher</p>
+            </div>
+            <div class="status-dot"></div>
+        </div>
 
-  <!-- Slot overview -->
-  <div>
-    <div class="sec">Assigned Slots</div>
-    <div class="card">
-      <div class="slot-grid" id="slotGrid">
-        <!-- filled by JS -->
-      </div>
-    </div>
-  </div>
+        <div class="body">
+            <!-- Assigned Slots -->
+            <div>
+                <div class="sec-label">Assigned Slots</div>
+                <div class="slot-grid" id="slotGrid"></div>
+            </div>
 
-  <!-- Slot count -->
-  <div>
-    <div class="sec">Wheel Size</div>
-    <div class="btn-grid col2">
-      <button class="opt" data-count="4">4 Slots</button>
-      <button class="opt" data-count="8">8 Slots</button>
-    </div>
-  </div>
+            <!-- Wheel Size -->
+            <div>
+                <div class="sec-label">Wheel Size</div>
+                <div class="stepper-row">
+                    <div class="stepper-label">
+                        Slices
+                        <span>Min 2 · Max 9</span>
+                    </div>
+                    <div class="stepper-controls">
+                        <button class="step-btn" id="stepDown">−</button>
+                        <div class="step-sep"></div>
+                        <div class="step-val" id="stepVal">8</div>
+                        <div class="step-sep"></div>
+                        <button class="step-btn" id="stepUp">+</button>
+                    </div>
+                </div>
+            </div>
 
-  <!-- Trigger -->
-  <div>
-    <div class="sec">Trigger</div>
-    <div class="btn-grid col3">
-      <button class="opt" data-trigger="both">Both</button>
-      <button class="opt" data-trigger="middle">Middle Click</button>
-      <button class="opt" data-trigger="alt">Alt + Click</button>
-    </div>
-  </div>
+            <!-- Shortcut Key -->
+            <div>
+                <div class="sec-label">Shortcut Key</div>
+                <div class="shortcut-row">
+                    <div class="shortcut-label">
+                        Trigger key combo
+                        <span>Hold Alt + key to open wheel</span>
+                    </div>
+                    <div class="key-display">
+                        <span class="key-badge">Alt</span>
+                        <span class="key-sep">+</span>
+                        <div class="key-input-wrap">
+                            <input
+                                class="key-input"
+                                id="keyInput"
+                                type="text"
+                                maxlength="1"
+                                readonly
+                                title="Click and press a letter key"
+                            />
+                        </div>
+                    </div>
+                </div>
+            </div>
 
-  <!-- How-to -->
-  <div>
-    <div class="sec">How to use</div>
-    <div class="card">
-      <div class="step">
-        <div class="sn">1</div>
-        <div class="st">Trigger the wheel on any page</div>
-      </div>
-      <div class="step">
-        <div class="sn">2</div>
-        <div class="st"><span class="gold">Hold the center hub</span> to enter <strong>Edit Mode</strong></div>
-      </div>
-      <div class="step">
-        <div class="sn">3</div>
-        <div class="st">Click any slice to assign a tab to that fixed slot</div>
-      </div>
-      <div class="step">
-        <div class="sn">4</div>
-        <div class="st">Right-click a slice to <strong>clear</strong> its assignment</div>
-      </div>
-      <div class="step">
-        <div class="sn">5</div>
-        <div class="st">Back in normal mode — flick toward your slot and <strong>release</strong></div>
-      </div>
-    </div>
-  </div>
+            <!-- How to use -->
+            <div>
+                <div class="sec-label">How to Use</div>
+                <div class="steps-card">
+                    <div class="step-row">
+                        <div class="step-n">1</div>
+                        <div class="step-t">
+                            Hold <span class="hl" id="hintCombo">Alt+Q</span> or
+                            middle-click anywhere to open the wheel
+                        </div>
+                    </div>
+                    <div class="step-row">
+                        <div class="step-n">2</div>
+                        <div class="step-t">
+                            <strong>Flick</strong> your mouse toward a slice
+                            while holding the key/button
+                        </div>
+                    </div>
+                    <div class="step-row">
+                        <div class="step-n">3</div>
+                        <div class="step-t">
+                            <strong>Release</strong> to instantly switch to that
+                            tab
+                        </div>
+                    </div>
+                    <div class="step-row">
+                        <div class="step-n">4</div>
+                        <div class="step-t">
+                            <strong>Left-click</strong> an empty slice to assign
+                            the current tab · <strong>Right-click</strong> to
+                            clear
+                        </div>
+                    </div>
+                    <div class="step-row">
+                        <div class="step-n">5</div>
+                        <div class="step-t">
+                            Press <span class="hl">Esc</span> to dismiss without
+                            switching
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
 
-</div>
+        <div class="ftr">
+            <span class="ftr-ver">TABWHEEL v4 · MV3</span>
+            <span class="ftr-saved" id="saved">Saved</span>
+        </div>
 
-<div class="ftr">
-  <span>TabWheel v2.0</span>
-  <span class="saved" id="saved">✓ Saved</span>
-</div>
-
-<script src="popup.js"></script>
-</body>
+        <script src="popup.js"></script>
+    </body>
 </html>
