@@ -1,4 +1,4 @@
-// TabWheel Radial — Content Script v12 (Click to Add, Right-Click to Delete)
+// TabWheel Radial — Content Script v13
 (function () {
   if (window.__tabWheelLoaded) return;
   window.__tabWheelLoaded = true;
@@ -22,11 +22,20 @@
   let slots = {};
   let slotCount = 8;
   let releaseQueued = false;
+  let dismissGeneration = 0;
+  let wheelSession = 0;
 
+  // Keyboard combo
   let instantKey = "q";
   let cursorX = 0,
     cursorY = 0;
   let comboActive = false;
+
+  // Middle-click tracking
+  // mouseTriggered = true means wheel was opened by middle-click,
+  // so mouseup(button=1) should close it (switch-only, no assign/edit).
+  let mouseTriggered = false;
+  let mouseOpenedAt = 0; // timestamp of last middle-click open, for auxclick guard
 
   // ── DOM refs ─────────────────────────────────────────────────────────────
   let ROOT, BACK, SVG, HUB, LBL, HINT;
@@ -56,6 +65,7 @@
     return `M${ax} ${ay}L${bx} ${by}A${r2} ${r2} 0 ${f} 1 ${cx} ${cy}L${dx} ${dy}A${r1} ${r1} 0 ${f} 0 ${ax} ${ay}Z`;
   }
 
+  // ── Styles ────────────────────────────────────────────────────────────────
   function injectStyles() {
     if (document.getElementById("tw-style")) return;
     const s = document.createElement("style");
@@ -94,6 +104,7 @@
     (document.head || document.documentElement).appendChild(s);
   }
 
+  // ── DOM ───────────────────────────────────────────────────────────────────
   function buildDOM() {
     injectStyles();
     document.getElementById("tw-root")?.remove();
@@ -121,8 +132,10 @@
   }
 
   function updateHint() {
-    if (HINT)
-      HINT.textContent = `Hold Alt+${instantKey.toUpperCase()} · Click empty to add · Click filled to switch · Right-click to delete`;
+    if (!HINT) return;
+    HINT.textContent = mouseTriggered
+      ? `Flick to switch · Release middle button to confirm · Esc to cancel`
+      : `Hold Alt+${instantKey.toUpperCase()} · Click empty to add · Click filled to switch · Right-click to delete`;
   }
 
   function place() {
@@ -130,6 +143,7 @@
     SVG.style.top = HUB.style.top = LBL.style.top = originY + "px";
   }
 
+  // ── Wheel ─────────────────────────────────────────────────────────────────
   function buildWheel() {
     SVG.innerHTML = "";
     slices = [];
@@ -138,6 +152,7 @@
       per = 360 / n;
     const defs = el("defs");
     SVG.appendChild(defs);
+
     for (let i = 0; i < n; i++) {
       const a0 = i * per + gap / 2;
       const a1 = (i + 1) * per - gap / 2;
@@ -260,17 +275,32 @@
         lt.textContent = ch;
         g.appendChild(lt);
       } else {
-        const pt = el("text", {
-          x: fx,
-          y: fy + 8,
-          "text-anchor": "middle",
-          "font-size": "22",
-          "font-weight": "200",
-          fill: "rgba(255,200,80,.55)",
-          "font-family": "system-ui,sans-serif",
-        });
-        pt.textContent = "+";
-        g.appendChild(pt);
+        // Empty slot — only show + icon when NOT in mouse mode (mouse mode is switch-only)
+        if (!mouseTriggered) {
+          const pt = el("text", {
+            x: fx,
+            y: fy + 8,
+            "text-anchor": "middle",
+            "font-size": "22",
+            "font-weight": "200",
+            fill: "rgba(255,200,80,.55)",
+            "font-family": "system-ui,sans-serif",
+          });
+          pt.textContent = "+";
+          g.appendChild(pt);
+        } else {
+          const dt = el("text", {
+            x: fx,
+            y: fy + 5,
+            "text-anchor": "middle",
+            "font-size": "18",
+            "font-weight": "200",
+            fill: "rgba(255,255,255,.09)",
+            "font-family": "system-ui,sans-serif",
+          });
+          dt.textContent = "·";
+          g.appendChild(dt);
+        }
       }
 
       const hit = el("path", {
@@ -279,12 +309,14 @@
         stroke: "none",
       });
       hit.style.pointerEvents = "all";
-      hit.style.cursor = "pointer";
+      // In mouse mode empty slots are not interactive; filled slots show pointer
+      hit.style.cursor = !mouseTriggered || online ? "pointer" : "default";
 
-      // ✅ Right-click to delete slot (keeps wheel open for immediate reassignment)
+      // Right-click to delete — keyboard mode only (checked at event time)
       hit.addEventListener("contextmenu", (e) => {
         e.preventDefault();
         e.stopPropagation();
+        if (mouseTriggered) return; // ← Never delete in middle-click mode
         if (asgn) {
           chrome.runtime.sendMessage(
             { type: "SET_SLOT", slotIndex: i, assignment: null },
@@ -305,7 +337,6 @@
       slots = r?.slots || {};
       slotCount = r?.slotCount || 8;
       buildWheel();
-      // Preserve hover state visually after reload
       if (hovered >= 0 && hovered < slices.length) {
         const temp = hovered;
         hovered = -1;
@@ -314,10 +345,20 @@
     });
   }
 
-  function show(x, y) {
+  // ── Open / close ──────────────────────────────────────────────────────────
+  function show(x, y, fromMouse = false) {
     if (isOpen || isLoading) return;
+
+    // Clear any lingering dismissing state/animations from a previous rapid close/open
+    ROOT.classList.remove("dismissing");
+    SVG.classList.remove("pop");
+    SVG.style.animation = "";
+    HUB.style.animation = "";
+
+    const mySession = ++wheelSession; // Increment and capture
     isLoading = true;
     cancelRequested = false;
+    mouseTriggered = fromMouse;
     originX = x;
     originY = y;
     hovered = -1;
@@ -325,15 +366,30 @@
     releaseQueued = false;
 
     chrome.runtime.sendMessage({ type: "GET_TABS" }, (res) => {
-      if (cancelRequested || chrome.runtime.lastError || !res) {
-        isLoading = false;
+      if (
+        mySession !== wheelSession ||
+        cancelRequested ||
+        chrome.runtime.lastError ||
+        !res
+      ) {
+        if (mySession === wheelSession) {
+          isLoading = false;
+          mouseTriggered = false;
+        }
         return;
       }
       openTabs = res.tabs || [];
 
       chrome.runtime.sendMessage({ type: "GET_SLOTS" }, (sr) => {
-        if (cancelRequested || chrome.runtime.lastError) {
-          isLoading = false;
+        if (
+          mySession !== wheelSession ||
+          cancelRequested ||
+          chrome.runtime.lastError
+        ) {
+          if (mySession === wheelSession) {
+            isLoading = false;
+            mouseTriggered = false;
+          }
           return;
         }
         slots = sr?.slots || {};
@@ -342,6 +398,7 @@
         isOpen = true;
         place();
         buildWheel();
+        updateHint();
         ROOT.classList.add("open");
         SVG.classList.add("pop");
         SVG.addEventListener(
@@ -352,6 +409,7 @@
 
         if (releaseQueued) {
           releaseQueued = false;
+          syncHoverFromCursor();
           executeAndDismiss();
         }
       });
@@ -363,7 +421,6 @@
     isOpen = false;
     isLoading = false;
     cancelRequested = true;
-
     const targetTab = goTo;
     goTo = null;
     slices = [];
@@ -377,37 +434,53 @@
     ROOT.classList.add("dismissing");
     ROOT.classList.remove("open");
 
+    const mySession = wheelSession; // Capture the session this dismiss belongs to
+
     const cleanup = () => {
+      // If a NEW wheel has started opening since this dismiss was triggered,
+      // DO NOT run cleanup, as it would corrupt the new wheel's state.
+      if (mySession !== wheelSession) return;
+
       ROOT.classList.remove("dismissing");
       HUB.style.animation = "";
       SVG.style.animation = "";
+      mouseTriggered = false;
+      unblockAutoscrollCursor();
+      updateHint();
     };
     SVG.addEventListener("animationend", cleanup, { once: true });
     setTimeout(cleanup, 180);
   }
 
-  // ✅ Triggered ONLY on Alt+Q release (Switches tab, NEVER assigns)
+  // Recompute hovered from current cursor — fixes stationary-cursor release (Bug 4)
+  function syncHoverFromCursor() {
+    if (!isOpen || slices.length === 0) return;
+    const dx = cursorX - originX,
+      dy = cursorY - originY;
+    if (Math.hypot(dx, dy) < FLICK_R) {
+      setHover(-1);
+      return;
+    }
+    const deg = ((Math.atan2(dx, -dy) * 180) / Math.PI + 360) % 360;
+    const per = 360 / slotCount;
+    setHover(Math.floor(deg / per) % slotCount);
+  }
+
+  // Switch on release (keyboard path, or mouse path when called explicitly)
   function executeAndDismiss() {
     if (!isOpen) return;
-
+    syncHoverFromCursor(); // always sync before reading hovered
     const s = hovered >= 0 ? slices[hovered] : null;
-
-    if (s) {
-      // Only switch if occupied. If empty, do nothing and just close.
-      if (s.online && s.live) {
-        goTo = s.live;
-      }
-    }
+    if (s?.online && s.live) goTo = s.live;
     dismiss();
   }
 
+  // ── Hover ─────────────────────────────────────────────────────────────────
   function setHover(i) {
     if (i === hovered) return;
     hovered = i;
-
     slices.forEach((s, j) => s.bg.classList.toggle("hot", j === i && s.online));
     const s = i >= 0 ? slices[i] : null;
-
     if (s) {
       LBL.textContent = (s.live?.title || s.asgn?.title || "").slice(0, 42);
       LBL.classList.add("on");
@@ -419,13 +492,14 @@
     }
   }
 
-  // ── Global Events ────────────────────────────────────────────────────────
+  // ── Global events ─────────────────────────────────────────────────────────
+
+  // Track cursor position for keyboard-triggered open
   window.addEventListener(
     "mousemove",
     (e) => {
       cursorX = e.clientX;
       cursorY = e.clientY;
-
       if (!isOpen || slices.length === 0) return;
       const dx = e.clientX - originX,
         dy = e.clientY - originY;
@@ -440,15 +514,66 @@
     { capture: true, passive: true },
   );
 
-  // ✅ Left-Click to Assign (Empty) or Switch (Occupied)
+  // Suppress middle-mouse autoscroll:
+  // 1. pointermove blocks the actual scroll movement while middle is held
+  // 2. A <style> injected on middle-down overrides the autoscroll cursor Chrome shows
+  //    (cursor:auto on <html> conflicts with Chrome's scroll cursor and suppresses it)
+  let antiScrollStyle = null;
+
+  function blockAutoscrollCursor() {
+    if (antiScrollStyle) return;
+    antiScrollStyle = document.createElement("style");
+    antiScrollStyle.id = "tw-noscroll";
+    antiScrollStyle.textContent = "html, * { cursor: default !important; }";
+    (document.head || document.documentElement).appendChild(antiScrollStyle);
+  }
+
+  function unblockAutoscrollCursor() {
+    antiScrollStyle?.remove();
+    antiScrollStyle = null;
+  }
+
+  window.addEventListener(
+    "pointermove",
+    (e) => {
+      if (e.buttons === 4) e.preventDefault(); // block autoscroll drag movement
+    },
+    { capture: true, passive: false },
+  );
+
   window.addEventListener(
     "mousedown",
     (e) => {
-      if (e.button === 0 && isOpen) {
+      if (e.button === 1) blockAutoscrollCursor();
+    },
+    { capture: true, passive: true },
+  );
+
+  window.addEventListener(
+    "mouseup",
+    (e) => {
+      if (e.button === 1) unblockAutoscrollCursor();
+    },
+    { capture: true, passive: true },
+  );
+
+  window.addEventListener(
+    "mousedown",
+    (e) => {
+      // ── Middle-click: open wheel in switch-only mode ──────────────────────
+      if (e.button === 1 && !isOpen && !isLoading) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        mouseOpenedAt = Date.now();
+        show(e.clientX, e.clientY, true /* fromMouse */);
+        return;
+      }
+
+      // ── Left-click while open in keyboard mode: assign or switch ──────────
+      if (e.button === 0 && isOpen && !mouseTriggered) {
         const s = hovered >= 0 ? slices[hovered] : null;
         if (s) {
           if (s.empty) {
-            // Assign current tab to empty slice
             const activeTab = openTabs.find((t) => t.active);
             if (activeTab) {
               chrome.runtime.sendMessage({
@@ -461,9 +586,8 @@
                 },
               });
             }
-            goTo = null; // Don't switch tabs, just close
+            goTo = null;
           } else if (s.online && s.live) {
-            // Switch to occupied slice
             goTo = s.live;
           }
         }
@@ -476,6 +600,49 @@
     true,
   );
 
+  // ── Middle-click release handler (shared logic) ───────────────────────────
+  // Both mouseup and pointerup call this — whichever fires first acts,
+  // the second is a no-op because isOpen is already false after dismiss().
+  function handleMiddleRelease() {
+    if (isLoading) {
+      releaseQueued = true;
+      return;
+    }
+    if (isOpen && mouseTriggered) executeAndDismiss();
+  }
+
+  window.addEventListener(
+    "mouseup",
+    (e) => {
+      if (e.button === 1) handleMiddleRelease();
+    },
+    true,
+  );
+
+  // pointerup fires more reliably on pages that intercept mouse events (Bug 2 fix)
+  window.addEventListener(
+    "pointerup",
+    (e) => {
+      if (e.button === 1) handleMiddleRelease();
+    },
+    true,
+  );
+
+  // Suppress auxclick (middle-click link navigation) for the full duration of a
+  // mouse-triggered session plus a 150ms grace after dismiss (Bug 3 fix).
+  window.addEventListener(
+    "auxclick",
+    (e) => {
+      if (
+        e.button === 1 &&
+        (isOpen || isLoading || Date.now() - mouseOpenedAt < 150)
+      )
+        e.preventDefault();
+    },
+    true,
+  );
+
+  // ── Keyboard ──────────────────────────────────────────────────────────────
   document.addEventListener(
     "keydown",
     (e) => {
@@ -491,6 +658,7 @@
             show(
               cursorX || window.innerWidth / 2,
               cursorY || window.innerHeight / 2,
+              false,
             );
           }
         }
@@ -520,7 +688,7 @@
           releaseQueued = true;
           return;
         }
-        if (isOpen) {
+        if (isOpen && !mouseTriggered) {
           e.preventDefault();
           executeAndDismiss();
         }
@@ -547,7 +715,7 @@
     }
   });
 
-  // ── Init ─────────────────────────────────────────────────────────────────
+  // ── Init ──────────────────────────────────────────────────────────────────
   buildDOM();
   chrome.storage.sync.get({ customKey: "q" }, (data) => {
     instantKey = data.customKey || "q";
@@ -559,5 +727,5 @@
       updateHint();
     }
   });
-  console.log("[TabWheel] ready v12 (Click to Add, Right-Click to Delete)");
+  console.log("[TabWheel] ready v13");
 })();
