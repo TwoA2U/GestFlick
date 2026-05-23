@@ -1,4 +1,17 @@
-// TabWheel Radial — Content Script v15 (Fixed & Optimized)
+// TabWheel Radial — Content Script v16
+// Improvements applied (plan refs):
+//   #1  Viewport edge clamping          — clampOrigin()
+//   #2  Backdrop click to dismiss       — BACK click handler
+//   #3  Current-tab hub indicator       — #tw-hub-cur + updateHubCur()
+//   #4  Slot assignment flash feedback  — .tw-flash CSS + mousedown
+//   #5  Clear hint when wheel is closed — updateHint() clears when idle
+//   #6  Offline slot broken-link icon   — ⊘ glyph + "[closed]" label prefix
+//   #7  Remove cancelRequested flag     — wheelSession covers all its uses
+//   #8  Deduplicate mousemove logic     — delegates to syncHoverFromCursor()
+//   #10 rebuildIfOpen() helper          — used by reload() and onChanged
+//   #11 SLOT_COUNT_DEFAULT constant     — replaces all hardcoded 8 fallbacks
+//   #12 fetchWheelData() extracted      — I/O separated from show()
+//   #15 Hub favicon preview on hover   — HUB_FAV/HUB_ICO opacity swap
 (function () {
   if (window.__tabWheelLoaded) return;
   window.__tabWheelLoaded = true;
@@ -12,23 +25,24 @@
   const OUTER_R = 140;
   const INNER_R = 44;
   const FLICK_R = 20;
-  const LABEL_R = OUTER_R + 32;
+  const LABEL_R = OUTER_R + 32; // 172 — outermost label ring
+  const SLOT_COUNT_DEFAULT = 8; // #11 — keep in sync with background.js
 
   // ── State ────────────────────────────────────────────────────────────────
   let isOpen = false;
   let isLoading = false;
-  let cancelRequested = false;
+  // cancelRequested removed (#7) — wheelSession covers all its prior uses
   let originX = 0,
     originY = 0;
   let slices = [];
   let hovered = -1;
-  let prevHovered = -1; // [PERF-3] track previous hover for O(1) update
+  let prevHovered = -1; // O(1) hover update
   let goTo = null;
   let openTabs = [];
-  let tabByUrl = new Map(); // [PERF-2] built once when openTabs is assigned
-  let tabByHost = new Map(); // [PERF-2]
+  let tabByUrl = new Map(); // built once per open, not per buildWheel
+  let tabByHost = new Map();
   let slots = {};
-  let slotCount = 8;
+  let slotCount = SLOT_COUNT_DEFAULT;
   let releaseQueued = false;
   let wheelSession = 0;
 
@@ -41,12 +55,10 @@
   // Middle-click tracking
   let mouseTriggered = false;
   let mouseDismissedAt = 0;
-
-  // [BUG-3] Guard against double-firing from both mouseup and pointerup
   let middleReleaseHandled = false;
 
   // ── DOM refs ─────────────────────────────────────────────────────────────
-  let ROOT, BACK, SVG, HUB, LBL, HINT;
+  let ROOT, BACK, SVG, HUB, HUB_ICO, HUB_FAV, HUB_CUR, LBL, HINT;
   const NS = "http://www.w3.org/2000/svg";
 
   function el(tag, a) {
@@ -54,18 +66,15 @@
     if (a) for (const k in a) e.setAttribute(k, a[k]);
     return e;
   }
-
   function mk(tag, id) {
     const e = document.createElement(tag);
     if (id) e.id = id;
     return e;
   }
-
   function xy(r, deg) {
     const a = ((deg - 90) * Math.PI) / 180;
     return [r * Math.cos(a), r * Math.sin(a)];
   }
-
   function wedge(r1, r2, a0, a1) {
     const [ax, ay] = xy(r1, a0),
       [bx, by] = xy(r2, a0);
@@ -82,13 +91,23 @@
     s.id = "tw-style";
     s.textContent = `
       #tw-root{all:initial;position:fixed!important;inset:0!important;z-index:2147483647!important;pointer-events:none!important;font-family:system-ui,sans-serif!important;display:none!important;}
-      #tw-root.open, #tw-root.dismissing{display:block!important;}
+      #tw-root.open,#tw-root.dismissing{display:block!important;}
       #tw-root.open{pointer-events:all!important;}
+
       #tw-back{position:fixed;inset:0;background:rgba(0,0,0,.42);backdrop-filter:blur(2px);opacity:0;transition:opacity .15s;}
       #tw-root.open #tw-back{opacity:1;}
 
       #tw-svg{position:fixed;overflow:visible;pointer-events:none;width:1px;height:1px;transform:translate(-50%,-50%);}
+
+      /* #3 — hub: overflow:visible keeps #tw-hub-cur visible below the circle */
       #tw-hub{position:fixed;transform:translate(-50%,-50%);width:50px;height:50px;border-radius:50%;background:rgba(14,14,24,.97);border:2px solid rgba(255,255,255,.15);box-shadow:0 4px 24px rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;cursor:pointer;pointer-events:all;overflow:visible;}
+
+      /* #15 — compass icon wrapper and favicon, overlaid in hub */
+      #tw-hub-ico{position:absolute;display:flex;align-items:center;justify-content:center;transition:opacity .1s;pointer-events:none;}
+      #tw-hub-fav{position:absolute;width:24px;height:24px;border-radius:4px;object-fit:contain;opacity:0;transition:opacity .1s;pointer-events:none;}
+
+      /* #3 — current-tab hostname label beneath the hub circle */
+      #tw-hub-cur{position:absolute;bottom:-20px;left:50%;transform:translateX(-50%);font-size:9px;color:rgba(255,255,255,.45);white-space:nowrap;max-width:90px;overflow:hidden;text-overflow:ellipsis;pointer-events:none;font-family:system-ui,sans-serif;}
 
       #tw-lbl{position:fixed;transform:translate(-50%,-50%);background:rgba(10,10,20,.95);border:1px solid rgba(255,255,255,.1);border-radius:10px;padding:5px 13px;font-size:12px;font-weight:500;color:#e8e8f5;white-space:nowrap;max-width:220px;overflow:hidden;text-overflow:ellipsis;pointer-events:none;opacity:0;transition:opacity .1s;box-shadow:0 4px 16px rgba(0,0,0,.6);}
       #tw-lbl.on{opacity:1;}
@@ -100,6 +119,10 @@
       .tw-bg.offline{opacity:.42;filter:saturate(.3);}
       .tw-bg.hot{opacity:1!important;filter:brightness(1.35) drop-shadow(0 0 12px rgba(140,190,255,.55));}
       .tw-bg.cur{opacity:.95;}
+
+      /* #4 — flash on slot assignment */
+      @keyframes tw-flash{0%{opacity:1;filter:brightness(2.8) saturate(1.8);}100%{opacity:1;filter:brightness(1);}}
+      .tw-bg.tw-flash{animation:tw-flash .25s ease-out forwards!important;}
 
       #tw-root.dismissing #tw-svg{animation:tw-pop-out .12s cubic-bezier(.4,0,1,1) forwards!important;}
       #tw-root.dismissing #tw-hub{animation:tw-hub-out .12s cubic-bezier(.4,0,1,1) forwards!important;}
@@ -117,6 +140,7 @@
   function buildDOM() {
     injectStyles();
     document.getElementById("tw-root")?.remove();
+
     ROOT = mk("div", "tw-root");
     BACK = mk("div", "tw-back");
     SVG = el("svg");
@@ -124,9 +148,10 @@
     HUB = mk("div", "tw-hub");
     LBL = mk("div", "tw-lbl");
     HINT = mk("div", "tw-hint");
-    updateHint();
 
-    HUB.innerHTML = `
+    // #15 — wrap compass in HUB_ICO so we can cross-fade with HUB_FAV
+    HUB_ICO = mk("div", "tw-hub-ico");
+    HUB_ICO.innerHTML = `
       <svg viewBox="0 0 22 22" width="20" height="20" fill="none" stroke="white" stroke-width="1.6" stroke-linecap="round" style="pointer-events:none">
         <circle cx="11" cy="11" r="7.5"/>
         <circle cx="11" cy="11" r="2.2" fill="white" stroke="none"/>
@@ -136,14 +161,36 @@
         <line x1="16" y1="11" x2="18.5" y2="11"/>
       </svg>`;
 
+    // #15 — favicon overlay (hidden by default)
+    HUB_FAV = mk("img", "tw-hub-fav");
+    HUB_FAV.alt = "";
+
+    // #3 — current-tab hostname tag below hub
+    HUB_CUR = mk("div", "tw-hub-cur");
+
+    HUB.append(HUB_ICO, HUB_FAV, HUB_CUR);
+
+    // #2 — backdrop click dismisses wheel
+    BACK.addEventListener("click", () => {
+      if (isOpen) {
+        goTo = null;
+        dismiss();
+      }
+    });
+
     ROOT.append(BACK, SVG, HUB, LBL, HINT);
     (document.body || document.documentElement).appendChild(ROOT);
   }
 
+  // #5 — show correct mode hint when open, clear when closed
   function updateHint() {
     if (!HINT) return;
+    if (!isOpen && !isLoading) {
+      HINT.textContent = "";
+      return;
+    }
     HINT.textContent = mouseTriggered
-      ? `Flick to switch · Release middle button to confirm · Esc to cancel`
+      ? "Flick to switch · Release middle button to confirm · Esc to cancel"
       : `Hold Alt+${instantKey.toUpperCase()} · Click empty to add · Click filled to switch · Right-click to delete`;
   }
 
@@ -152,7 +199,16 @@
     SVG.style.top = HUB.style.top = LBL.style.top = originY + "px";
   }
 
-  // ── [PERF-2] Build tab lookup maps once when openTabs changes ─────────────
+  // #1 — clamp wheel origin so it never clips the viewport edge
+  function clampOrigin(x, y) {
+    const SAFE = LABEL_R + 16; // 188 px — accounts for label ring beyond OUTER_R
+    return [
+      Math.max(SAFE, Math.min(window.innerWidth - SAFE, x)),
+      Math.max(SAFE, Math.min(window.innerHeight - SAFE, y)),
+    ];
+  }
+
+  // Build tab lookup maps once per open (not per buildWheel call)
   function buildTabMaps() {
     tabByUrl = new Map(openTabs.map((t) => [t.url, t]));
     tabByHost = new Map();
@@ -164,11 +220,30 @@
     }
   }
 
+  // #12 — I/O separated from show(); returns {tabs,slots,slotCount} or null
+  async function fetchWheelData(mySession) {
+    const [tabsRes, slotsRes] = await Promise.all([
+      new Promise((res) =>
+        chrome.runtime.sendMessage({ type: "GET_TABS" }, res),
+      ),
+      new Promise((res) =>
+        chrome.runtime.sendMessage({ type: "GET_SLOTS" }, res),
+      ),
+    ]);
+    // Bail if session was superseded or tabs fetch failed
+    if (mySession !== wheelSession || !tabsRes) return null;
+    return {
+      tabs: tabsRes.tabs || [],
+      slots: slotsRes?.slots || {},
+      slotCount: slotsRes?.slotCount || SLOT_COUNT_DEFAULT,
+    };
+  }
+
   // ── Wheel ─────────────────────────────────────────────────────────────────
   function buildWheel() {
     SVG.innerHTML = "";
     slices = [];
-    prevHovered = -1; // reset on full rebuild
+    prevHovered = -1;
     const n = slotCount,
       gap = 3,
       per = 360 / n;
@@ -186,7 +261,6 @@
       let live = null;
 
       if (asgn) {
-        // Exact URL match first, then hostname fallback
         live = tabByUrl.get(asgn.url) || null;
         if (!live) {
           try {
@@ -199,6 +273,7 @@
       const online = !!live;
       const current = live?.active === true;
 
+      // Gradient
       const gid = `tg${i}`;
       const [gx1, gy1] = xy(INNER_R, mid),
         [gx2, gy2] = xy(OUTER_R, mid);
@@ -224,6 +299,7 @@
       );
       defs.appendChild(gr);
 
+      // Favicon clip circle
       const cid = `tc${i}`;
       const clip = el("clipPath", { id: cid });
       const [fx, fy] = xy((INNER_R + OUTER_R) / 2, mid);
@@ -243,6 +319,7 @@
       if (current) bg.classList.add("cur");
       g.appendChild(bg);
 
+      // Active-tab rim arc
       if (current) {
         g.appendChild(
           el("path", {
@@ -253,6 +330,7 @@
         );
       }
 
+      // Slot number badge
       const [nx, ny] = xy(OUTER_R - 11, mid);
       g.appendChild(
         el("circle", { cx: nx, cy: ny, r: 8.5, fill: "rgba(0,0,0,.45)" }),
@@ -269,6 +347,7 @@
       nt.textContent = String(i + 1);
       g.appendChild(nt);
 
+      // Favicon / fallback glyph
       const furl = live?.favIconUrl || asgn?.favIconUrl || "";
       if (furl.startsWith("http")) {
         g.appendChild(
@@ -283,22 +362,28 @@
           }),
         );
       } else if (!empty) {
-        let ch = "?";
-        try {
-          ch = new URL(asgn.url).hostname.replace("www.", "")[0].toUpperCase();
-        } catch {}
+        // #6 — offline: show ⊘ in muted red; online: first letter of hostname
+        let ch = online ? "?" : "⊘";
+        if (online) {
+          try {
+            ch = new URL(asgn.url).hostname
+              .replace("www.", "")[0]
+              .toUpperCase();
+          } catch {}
+        }
         const lt = el("text", {
           x: fx,
           y: fy + 5.5,
           "text-anchor": "middle",
-          "font-size": "14",
+          "font-size": online ? "14" : "16",
           "font-weight": "700",
-          fill: online ? "rgba(255,255,255,.9)" : "rgba(255,255,255,.28)",
+          fill: online ? "rgba(255,255,255,.9)" : "rgba(255,100,100,.55)",
           "font-family": "system-ui,sans-serif",
         });
         lt.textContent = ch;
         g.appendChild(lt);
       } else {
+        // Empty slot
         if (!mouseTriggered) {
           const pt = el("text", {
             x: fx,
@@ -326,6 +411,7 @@
         }
       }
 
+      // Invisible hit target
       const hit = el("path", {
         d: wedge(INNER_R, OUTER_R, a0, a1),
         fill: "transparent",
@@ -334,7 +420,6 @@
       hit.style.pointerEvents = "all";
       hit.style.cursor = !mouseTriggered || online ? "pointer" : "default";
 
-      // Right-click to delete — keyboard mode only
       hit.addEventListener("contextmenu", (e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -357,6 +442,37 @@
     }
   }
 
+  // #3 — update the hostname tag beneath the hub
+  function updateHubCur() {
+    if (!HUB_CUR) return;
+    const active = slices.find((s) => s.live?.active === true);
+    if (active?.asgn?.url) {
+      try {
+        HUB_CUR.textContent = new URL(active.asgn.url).hostname.replace(
+          "www.",
+          "",
+        );
+      } catch {
+        HUB_CUR.textContent = "";
+      }
+    } else {
+      HUB_CUR.textContent = "";
+    }
+  }
+
+  // #10 — single rebuild entry point used by reload() and onChanged
+  function rebuildIfOpen() {
+    if (!isOpen) return;
+    buildWheel();
+    updateHubCur();
+    if (hovered >= 0 && hovered < slices.length) {
+      const tmp = hovered;
+      hovered = -1;
+      prevHovered = -1;
+      setHover(tmp);
+    }
+  }
+
   function reload() {
     chrome.runtime.sendMessage({ type: "GET_SLOTS" }, (r) => {
       if (chrome.runtime.lastError) {
@@ -364,14 +480,8 @@
         return;
       }
       slots = r?.slots || {};
-      slotCount = r?.slotCount || 8;
-      buildWheel();
-      if (hovered >= 0 && hovered < slices.length) {
-        const temp = hovered;
-        hovered = -1;
-        prevHovered = -1;
-        setHover(temp);
-      }
+      slotCount = r?.slotCount || SLOT_COUNT_DEFAULT;
+      rebuildIfOpen(); // #10
     });
   }
 
@@ -386,47 +496,42 @@
 
     const mySession = ++wheelSession;
     isLoading = true;
-    cancelRequested = false;
     mouseTriggered = fromMouse;
-    originX = x;
-    originY = y;
+    updateHint(); // #5 — set correct mode hint now that mouseTriggered is known
+
+    // #1 — clamp so wheel never clips screen edge
+    [originX, originY] = clampOrigin(x, y);
+
     hovered = -1;
     prevHovered = -1;
     goTo = null;
     releaseQueued = false;
-    middleReleaseHandled = false; // [BUG-3] reset guard for this open session
+    middleReleaseHandled = false;
 
     try {
-      // [PERF-1] Fetch tabs and slots in parallel
-      const [tabsRes, slotsRes] = await Promise.all([
-        new Promise((res) =>
-          chrome.runtime.sendMessage({ type: "GET_TABS" }, res),
-        ),
-        new Promise((res) =>
-          chrome.runtime.sendMessage({ type: "GET_SLOTS" }, res),
-        ),
-      ]);
+      // #12 — I/O in fetchWheelData; session guard inside
+      const data = await fetchWheelData(mySession);
 
-      // [BUG-2] Check session validity after both resolve; reset mouseTriggered on all exits
-      if (mySession !== wheelSession || cancelRequested || !tabsRes) {
+      if (!data) {
+        // Session was superseded or tabs fetch failed
         if (mySession === wheelSession) {
           isLoading = false;
-          mouseTriggered = false; // [BUG-2] fixed: was missing from this path
+          mouseTriggered = false;
         }
         return;
       }
 
-      openTabs = tabsRes.tabs || [];
-      buildTabMaps(); // [PERF-2] build maps once here, not inside buildWheel
-
-      slots = slotsRes?.slots || {};
-      slotCount = slotsRes?.slotCount || 8;
+      openTabs = data.tabs;
+      slots = data.slots;
+      slotCount = data.slotCount;
+      buildTabMaps();
 
       isLoading = false;
       isOpen = true;
       place();
       buildWheel();
-      updateHint();
+      updateHubCur(); // #3
+      updateHint(); // #5 — re-confirm (isOpen now true)
       ROOT.classList.add("open");
       SVG.classList.add("pop");
       SVG.addEventListener("animationend", () => SVG.classList.remove("pop"), {
@@ -441,7 +546,7 @@
     } catch (err) {
       if (mySession === wheelSession) {
         isLoading = false;
-        mouseTriggered = false; // [BUG-2] also applied in catch path
+        mouseTriggered = false;
       }
     }
   }
@@ -450,9 +555,9 @@
     if (!isOpen && !isLoading) return;
     isOpen = false;
     isLoading = false;
-    cancelRequested = true;
-    releaseQueued = false; // [BUG-1] clear queued release on any dismiss/cancel
-    middleReleaseHandled = false; // [BUG-3] reset for next session
+    // #7 — cancelRequested removed; wheelSession invalidates any in-flight show()
+    releaseQueued = false;
+    middleReleaseHandled = false;
     const targetTab = goTo;
     goTo = null;
     slices = [];
@@ -471,13 +576,16 @@
     hovered = -1;
     prevHovered = -1;
 
+    // #3/#15 — reset hub to compass
+    if (HUB_CUR) HUB_CUR.textContent = "";
+    if (HUB_FAV) HUB_FAV.style.opacity = "0";
+    if (HUB_ICO) HUB_ICO.style.opacity = "1";
+
     ROOT.classList.add("dismissing");
     ROOT.classList.remove("open");
-
     mouseDismissedAt = Date.now();
 
     const mySession = wheelSession;
-
     const cleanup = () => {
       if (mySession !== wheelSession) return;
       ROOT.classList.remove("dismissing");
@@ -485,7 +593,7 @@
       SVG.style.animation = "";
       mouseTriggered = false;
       unblockAutoscrollCursor();
-      updateHint();
+      updateHint(); // #5 — clears hint text when closed
     };
     SVG.addEventListener("animationend", cleanup, { once: true });
     setTimeout(cleanup, 180);
@@ -500,8 +608,7 @@
       return;
     }
     const deg = ((Math.atan2(dx, -dy) * 180) / Math.PI + 360) % 360;
-    const per = 360 / slotCount;
-    setHover(Math.floor(deg / per) % slotCount);
+    setHover(Math.floor(deg / (360 / slotCount)) % slotCount);
   }
 
   function executeAndDismiss() {
@@ -516,45 +623,52 @@
   function setHover(i) {
     if (i === hovered) return;
 
-    // [PERF-3] O(1) update: only touch the two changing slices
+    // O(1) — only touch the two changing slices
     if (prevHovered >= 0 && prevHovered < slices.length) {
       slices[prevHovered].bg.classList.remove("hot");
     }
     if (i >= 0 && i < slices.length && slices[i].online) {
       slices[i].bg.classList.add("hot");
     }
-
     prevHovered = hovered;
     hovered = i;
 
     const s = i >= 0 ? slices[i] : null;
     if (s) {
-      LBL.textContent = (s.live?.title || s.asgn?.title || "").slice(0, 42);
+      // #6 — prepend "[closed]" to label for offline assigned slots
+      const title = (s.live?.title || s.asgn?.title || "").slice(0, 42);
+      LBL.textContent = !s.online && s.asgn ? `[closed] ${title}` : title;
       LBL.classList.add("on");
       const rad = ((s.mid - 90) * Math.PI) / 180;
       LBL.style.left = originX + Math.cos(rad) * LABEL_R + "px";
       LBL.style.top = originY + Math.sin(rad) * LABEL_R + "px";
+
+      // #15 — swap hub to favicon when hovering an online slice
+      if (s.online && s.live?.favIconUrl?.startsWith("http")) {
+        HUB_FAV.src = s.live.favIconUrl;
+        HUB_FAV.style.opacity = "1";
+        HUB_ICO.style.opacity = "0";
+      } else {
+        HUB_FAV.style.opacity = "0";
+        HUB_ICO.style.opacity = "1";
+      }
     } else {
       LBL.classList.remove("on");
+      // #15 — restore compass when no slice is hovered
+      HUB_FAV.style.opacity = "0";
+      HUB_ICO.style.opacity = "1";
     }
   }
 
   // ── Global events ─────────────────────────────────────────────────────────
+
+  // #8 — mousemove delegates fully to syncHoverFromCursor(); no duplicated logic
   window.addEventListener(
     "mousemove",
     (e) => {
       cursorX = e.clientX;
       cursorY = e.clientY;
-      if (!isOpen || slices.length === 0) return;
-      const dx = e.clientX - originX,
-        dy = e.clientY - originY;
-      if (Math.hypot(dx, dy) < FLICK_R) {
-        setHover(-1);
-        return;
-      }
-      const deg = ((Math.atan2(dx, -dy) * 180) / Math.PI + 360) % 360;
-      const per = 360 / slotCount;
-      setHover(Math.floor(deg / per) % slotCount);
+      if (isOpen && slices.length > 0) syncHoverFromCursor();
     },
     { capture: true, passive: true },
   );
@@ -596,6 +710,8 @@
         const s = hovered >= 0 ? slices[hovered] : null;
         if (s) {
           if (s.empty) {
+            // #4 — flash the slice before dismissing so the user sees confirmation
+            s.bg.classList.add("tw-flash");
             const activeTab = openTabs.find((t) => t.active);
             if (activeTab) {
               chrome.runtime.sendMessage(
@@ -628,23 +744,18 @@
     true,
   );
 
-  // [BUG-4] mouseup: only unblock cursor here for the non-wheel case (autoscroll drag).
-  // The wheel's unblock is handled in dismiss() cleanup.
+  // Unblock cursor for the non-wheel autoscroll case only; wheel unblocks in dismiss() cleanup
   window.addEventListener(
     "mouseup",
     (e) => {
-      if (e.button === 1 && !isOpen && !isLoading) {
-        unblockAutoscrollCursor();
-      }
+      if (e.button === 1 && !isOpen && !isLoading) unblockAutoscrollCursor();
     },
     { capture: true, passive: true },
   );
 
   function handleMiddleRelease() {
-    // [BUG-3] Guard against double-firing from mouseup + pointerup on the same event
     if (middleReleaseHandled) return;
     middleReleaseHandled = true;
-
     if (isLoading) {
       releaseQueued = true;
       return;
@@ -667,7 +778,6 @@
     true,
   );
 
-  // Auxclick guard
   window.addEventListener(
     "auxclick",
     (e) => {
@@ -705,7 +815,7 @@
       if (e.key === "Escape") {
         e.preventDefault();
         comboActive = false;
-        cancelRequested = true;
+        // #7 — no cancelRequested; just dismiss() which lets session guard handle any in-flight show()
         if (isOpen || isLoading) {
           goTo = null;
           dismiss();
@@ -740,7 +850,7 @@
     "blur",
     () => {
       comboActive = false;
-      cancelRequested = true;
+      // #7 — no cancelRequested
       if (isOpen || isLoading) dismiss();
     },
     true,
@@ -749,29 +859,22 @@
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) {
       comboActive = false;
-      cancelRequested = true;
+      // #7 — no cancelRequested
       if (isOpen || isLoading) dismiss();
     }
   });
 
-  // ── [BUG-5] Storage change listener — keep open wheel in sync with popup ──
+  // ── Storage sync — keep open wheel in sync with popup changes ─────────────
   chrome.storage.onChanged.addListener((changes) => {
     if (changes.customKey) {
       instantKey = changes.customKey.newValue || "q";
       updateHint();
     }
-    // Reflect slot/slotCount changes from popup while wheel is open
     if ((changes.slots || changes.slotCount) && isOpen) {
       if (changes.slots) slots = changes.slots.newValue || {};
-      if (changes.slotCount) slotCount = changes.slotCount.newValue || 8;
-      buildWheel();
-      // Re-apply hover if still valid
-      if (hovered >= 0 && hovered < slices.length) {
-        const tmp = hovered;
-        hovered = -1;
-        prevHovered = -1;
-        setHover(tmp);
-      }
+      if (changes.slotCount)
+        slotCount = changes.slotCount.newValue || SLOT_COUNT_DEFAULT;
+      rebuildIfOpen(); // #10 — single call handles rebuild + hub label + hover re-apply
     }
   });
 
@@ -779,7 +882,7 @@
   buildDOM();
   chrome.storage.sync.get({ customKey: "q" }, (data) => {
     instantKey = data.customKey || "q";
-    updateHint();
+    // updateHint() not called here — hint is empty until wheel opens (#5)
   });
-  console.log("[TabWheel] ready v15 (Fixed & Optimized)");
+  console.log("[TabWheel] ready v16");
 })();

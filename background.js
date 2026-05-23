@@ -1,12 +1,14 @@
-// TabWheel Radial — Background Service Worker (v3, Cleaned)
+// TabWheel Radial — Background Service Worker (v4)
+// Changes: #11 SLOT_COUNT_DEFAULT constant (keep in sync with content.js)
 
 const DEV = false;
 function dbg(...args) {
   if (DEV) console.debug("[TabWheel BG]", ...args);
 }
 
+const SLOT_COUNT_DEFAULT = 8; // #11 — keep in sync with content.js
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  // Return all tabs in current window
   if (msg.type === "GET_TABS") {
     chrome.tabs.query({ currentWindow: true }, (tabs) => {
       const list = tabs
@@ -24,7 +26,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
-  // Switch to a tab by id
   if (msg.type === "SWITCH_TAB") {
     chrome.tabs.update(msg.tabId, { active: true }, () => {
       if (chrome.runtime.lastError)
@@ -34,15 +35,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
-  // Load slot assignments from storage
   if (msg.type === "GET_SLOTS") {
-    chrome.storage.sync.get({ slots: {}, slotCount: 8 }, (data) => {
-      sendResponse({ slots: data.slots, slotCount: data.slotCount });
-    });
+    chrome.storage.sync.get(
+      { slots: {}, slotCount: SLOT_COUNT_DEFAULT },
+      (data) => {
+        sendResponse({ slots: data.slots, slotCount: data.slotCount });
+      },
+    );
     return true;
   }
 
-  // Save a single slot assignment  { slotIndex, url, title, favIconUrl }
   if (msg.type === "SET_SLOT") {
     chrome.storage.sync.get({ slots: {} }, (data) => {
       const slots = data.slots;
@@ -59,5 +61,4 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     });
     return true;
   }
-  // NOTE: SET_SLOT_COUNT removed — popup.js writes slotCount directly to storage.
 });
